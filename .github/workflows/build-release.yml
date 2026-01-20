@@ -45,7 +45,7 @@ jobs:
         run: bun run build
 
       - name: Package for macOS (unsigned)
-        run: bun run package:mac --config electron-builder.ci.yml
+        run: bun run package:mac --config electron-builder.ci.yml --publish never
         env:
           # Disable code signing for self-hosted releases
           CSC_IDENTITY_AUTO_DISCOVERY: false

@@ -1,5 +1,11 @@
 # electron-builder config for CI builds (no code signing)
 # Used by GitHub Actions for self-hosted fork builds
+# Extends the base config in package.json
+
+extends: null
+
+directories:
+  output: release
 
 mac:
   identity: null
