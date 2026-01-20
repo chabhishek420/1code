@@ -129,7 +129,14 @@ bun run setup:fork --cdn
 
 ## Notes
 
-- **Unsigned builds**: These builds aren't code-signed. macOS will show a warning — right-click → Open to bypass.
+- **Unsigned builds**: These builds aren't code-signed. macOS will show a warning or "damaged" message.
+
+  **Fix for "damaged" error:**
+  ```bash
+  xattr -cr /Applications/1Code.app
+  ```
+  This removes the quarantine attribute. Then open the app normally.
+
 - **Claude binary**: The build downloads Claude CLI automatically. If it fails, agent chat won't work but the app will still build.
 
 ---
