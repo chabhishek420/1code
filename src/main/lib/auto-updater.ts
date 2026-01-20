@@ -1,6 +1,8 @@
 import { BrowserWindow, ipcMain, app } from "electron"
 import log from "electron-log"
 import { autoUpdater, type UpdateInfo, type ProgressInfo } from "electron-updater"
+import * as fs from "fs"
+import * as path from "path"
 
 /**
  * IMPORTANT: Do NOT use lazy/dynamic imports for electron-updater!
@@ -12,6 +14,59 @@ import { autoUpdater, type UpdateInfo, type ProgressInfo } from "electron-update
  * See commit d946614c5 for the broken implementation - do not repeat this mistake.
  */
 
+// Update source configuration
+interface UpdateConfig {
+  // "github" for GitHub Releases, "cdn" for original CDN
+  source: "github" | "cdn"
+  // GitHub owner/repo (e.g., "your-username/1code") - only used when source is "github"
+  githubRepo?: string
+}
+
+// Default CDN base URL for updates
+const CDN_BASE = "https://cdn.21st.dev/releases/desktop"
+
+/**
+ * Load update configuration from user data directory
+ * Creates default config if it doesn't exist
+ */
+function loadUpdateConfig(): UpdateConfig {
+  const configPath = path.join(app.getPath("userData"), "update-config.json")
+
+  try {
+    if (fs.existsSync(configPath)) {
+      const content = fs.readFileSync(configPath, "utf-8")
+      const config = JSON.parse(content) as UpdateConfig
+      log.info("[AutoUpdater] Loaded config:", config)
+      return config
+    }
+  } catch (error) {
+    log.error("[AutoUpdater] Failed to load config:", error)
+  }
+
+  // Default to CDN
+  return { source: "cdn" }
+}
+
+/**
+ * Save update configuration to user data directory
+ */
+export function saveUpdateConfig(config: UpdateConfig): void {
+  const configPath = path.join(app.getPath("userData"), "update-config.json")
+  try {
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2))
+    log.info("[AutoUpdater] Saved config:", config)
+  } catch (error) {
+    log.error("[AutoUpdater] Failed to save config:", error)
+  }
+}
+
+/**
+ * Get current update configuration
+ */
+export function getUpdateConfig(): UpdateConfig {
+  return loadUpdateConfig()
+}
+
 function initAutoUpdaterConfig() {
   // Configure logging
   log.transports.file.level = "info"
@@ -22,9 +77,6 @@ function initAutoUpdaterConfig() {
   autoUpdater.autoInstallOnAppQuit = true // Install on quit if downloaded
   autoUpdater.autoRunAppAfterInstall = true // Restart app after install
 }
-
-// CDN base URL for updates
-const CDN_BASE = "https://cdn.21st.dev/releases/desktop"
 
 // Minimum interval between update checks (prevent spam on rapid focus/blur)
 const MIN_CHECK_INTERVAL = 60 * 1000 // 1 minute
@@ -51,11 +103,28 @@ export async function initAutoUpdater(getWindow: () => BrowserWindow | null) {
   // Initialize config
   initAutoUpdaterConfig()
 
-  // Configure feed URL to point to R2 CDN
-  autoUpdater.setFeedURL({
-    provider: "generic",
-    url: CDN_BASE,
-  })
+  // Load update source configuration
+  const config = loadUpdateConfig()
+
+  // Configure feed URL based on config
+  if (config.source === "github" && config.githubRepo) {
+    const [owner, repo] = config.githubRepo.split("/")
+    autoUpdater.setFeedURL({
+      provider: "github",
+      owner,
+      repo,
+      // Use releases (not pre-releases by default)
+      releaseType: "release",
+    })
+    log.info(`[AutoUpdater] Using GitHub Releases: ${config.githubRepo}`)
+  } else {
+    // Default to CDN
+    autoUpdater.setFeedURL({
+      provider: "generic",
+      url: CDN_BASE,
+    })
+    log.info("[AutoUpdater] Using CDN:", CDN_BASE)
+  }
 
   // Event: Checking for updates
   autoUpdater.on("checking-for-update", () => {
@@ -124,7 +193,7 @@ export async function initAutoUpdater(getWindow: () => BrowserWindow | null) {
   // Register IPC handlers
   registerIpcHandlers()
 
-  log.info("[AutoUpdater] Initialized with feed URL:", CDN_BASE)
+  log.info("[AutoUpdater] Initialized")
 }
 
 /**
@@ -172,6 +241,23 @@ function registerIpcHandlers() {
       currentVersion: app.getVersion(),
     }
   })
+
+  // Get update source configuration
+  ipcMain.handle("update:get-config", () => {
+    return loadUpdateConfig()
+  })
+
+  // Set update source configuration (requires app restart to take effect)
+  ipcMain.handle(
+    "update:set-config",
+    (
+      _event,
+      config: { source: "github" | "cdn"; githubRepo?: string },
+    ) => {
+      saveUpdateConfig(config)
+      return true
+    },
+  )
 }
 
 /**

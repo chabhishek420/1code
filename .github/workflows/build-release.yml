@@ -1,0 +1,162 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+      - ".github/workflows/sync-fork.yml"
+  workflow_dispatch:
+  workflow_call:
+
+# Prevent concurrent builds
+concurrency:
+  group: build-release
+  cancel-in-progress: true
+
+jobs:
+  build-macos:
+    runs-on: macos-14 # Apple Silicon runner
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Download Claude Code binaries
+        run: bun run claude:download
+        continue-on-error: true # May fail without proper auth
+
+      - name: Build app
+        run: bun run build
+
+      - name: Package for macOS (unsigned)
+        run: |
+          # Build without code signing for self-hosted releases
+          bun run package:mac -- \
+            --config.mac.identity=null \
+            --config.mac.notarize=null
+        env:
+          # Disable signing
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Generate update manifests
+        run: bun run dist:manifest
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Release v${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release/*.dmg
+            release/*.zip
+            release/latest-mac.yml
+            release/latest-mac-x64.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Optional: Build for other platforms in parallel
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    if: false # Disabled by default - set to true to enable
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Download Claude Code binaries
+        run: bun run claude:download
+        continue-on-error: true
+
+      - name: Build and package
+        run: |
+          bun run build
+          bun run package:win
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          files: |
+            release/*.exe
+            release/latest.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: false # Disabled by default - set to true to enable
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Download Claude Code binaries
+        run: bun run claude:download
+        continue-on-error: true
+
+      - name: Build and package
+        run: |
+          bun run build
+          bun run package:linux
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          files: |
+            release/*.AppImage
+            release/*.deb
+            release/latest-linux.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

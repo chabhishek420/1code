@@ -22,6 +22,7 @@
     "claude:download": "node scripts/download-claude-binary.mjs",
     "claude:download:all": "node scripts/download-claude-binary.mjs --all",
     "release": "rm -rf release && bun run claude:download && bun run build && bun run package:mac && bun run dist:manifest && ./scripts/upload-release-wrangler.sh",
+    "setup:fork": "node scripts/setup-fork-updates.mjs",
     "sync:public": "./scripts/sync-to-public.sh",
     "icon:generate": "node scripts/generate-icon.mjs",
     "db:generate": "drizzle-kit generate",
