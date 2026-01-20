@@ -92,7 +92,7 @@
     "shiki": "^1.24.4",
     "simple-git": "^3.28.0",
     "sonner": "^1.7.1",
-    "streamdown": "^2.0.1",
+    "streamdown": "^2.1.0",
     "superjson": "^2.2.2",
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
