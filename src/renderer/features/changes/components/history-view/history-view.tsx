@@ -40,7 +40,7 @@ export function HistoryView({
 	onFileSelect,
 	pushCount,
 }: HistoryViewProps) {
-	const { data: commits, isLoading } = trpc.changes.getHistory.useQuery(
+	const { data: commits, isLoading, refetch: refetchHistory } = trpc.changes.getHistory.useQuery(
 		{ worktreePath, limit: 50 },
 		{
 			enabled: !!worktreePath,
@@ -116,6 +116,23 @@ export function HistoryView({
 			onFileSelect(commitFiles[0], selectedCommitHash);
 		}
 	}, [commitFiles, selectedCommitHash, selectedFilePath, onFileSelect]);
+
+	// Refetch history and commit files when window gains focus
+	useEffect(() => {
+		if (!worktreePath) return
+
+		const handleWindowFocus = () => {
+			// Refetch commit history
+			refetchHistory()
+			// Refetch commit files if a commit is selected
+			if (selectedCommitHash) {
+				refetchFiles()
+			}
+		}
+
+		window.addEventListener('focus', handleWindowFocus)
+		return () => window.removeEventListener('focus', handleWindowFocus)
+	}, [worktreePath, selectedCommitHash, refetchHistory, refetchFiles])
 
 	const handleCommitClick = useCallback(
 		(commit: CommitInfo) => {

@@ -314,6 +314,8 @@ const fileDiffCardAreEqual = (
 ): boolean => {
   // Key comparison - file identity
   if (prev.file.key !== next.file.key) return false
+  // Diff content changes should re-render even when the file key is stable.
+  if (prev.file.diffText !== next.file.diffText) return false
   // State that affects rendering
   if (prev.isCollapsed !== next.isCollapsed) return false
   if (prev.isFullExpanded !== next.isFullExpanded) return false
@@ -991,9 +993,6 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
       }
     }, [discardFilePath, worktreePath, fileDiffs, handleRefresh])
 
-    // Threshold for auto-collapsing files
-    const AUTO_COLLAPSE_THRESHOLD = 10
-
     // Expand/collapse all functions - exposed via ref for parent control
     // Uses batched updates to avoid blocking UI with many files
     const expandAll = useCallback(() => {
@@ -1088,28 +1087,66 @@ export const AgentDiffView = forwardRef<AgentDiffViewRef, AgentDiffViewProps>(
       isAllExpanded,
     ])
 
-    // Auto-collapse all files when there are many files (performance optimization)
+    // Auto-expand all files with lazy batching for performance
     // Track if we've already initialized the collapsed state for this set of files
     const prevFileKeysRef = useRef<string>("")
+    const isExpandingRef = useRef(false)
+
     useEffect(() => {
       // Generate a unique key for the current file set
       const currentFileKeys = fileDiffs.map((f) => f.key).join(",")
 
-      // Only update if the file set changed
-      if (currentFileKeys !== prevFileKeysRef.current) {
+      // Only update if the file set changed and we're not already expanding
+      if (currentFileKeys !== prevFileKeysRef.current && !isExpandingRef.current) {
         prevFileKeysRef.current = currentFileKeys
 
-        if (fileDiffs.length > AUTO_COLLAPSE_THRESHOLD) {
-          // Collapse all files when there are many
-          const collapsedState: Record<string, boolean> = {}
-          for (const file of fileDiffs) {
-            collapsedState[file.key] = true
-          }
-          setCollapsedByFileKey(collapsedState)
-        } else {
-          // Reset to expanded for smaller diffs
-          setCollapsedByFileKey({})
+        // For small number of files, expand all at once
+        if (fileDiffs.length <= 10) {
+          startTransition(() => {
+            const expandedState: Record<string, boolean> = {}
+            for (const file of fileDiffs) {
+              expandedState[file.key] = false
+            }
+            setCollapsedByFileKey(expandedState)
+          })
+          return
         }
+
+        // For many files, expand in batches to avoid UI freeze
+        isExpandingRef.current = true
+        const BATCH_SIZE = 5
+        let currentBatch = 0
+
+        const expandBatch = () => {
+          const start = currentBatch * BATCH_SIZE
+          const end = Math.min(start + BATCH_SIZE, fileDiffs.length)
+
+          if (start >= fileDiffs.length) {
+            isExpandingRef.current = false
+            return
+          }
+
+          startTransition(() => {
+            setCollapsedByFileKey((prev) => {
+              const next = { ...prev }
+              for (let i = start; i < end; i++) {
+                const file = fileDiffs[i]
+                if (file) next[file.key] = false
+              }
+              return next
+            })
+          })
+
+          currentBatch++
+          if (currentBatch * BATCH_SIZE < fileDiffs.length) {
+            // Use requestAnimationFrame for next batch to allow UI to breathe
+            requestAnimationFrame(() => setTimeout(expandBatch, 0))
+          } else {
+            isExpandingRef.current = false
+          }
+        }
+
+        expandBatch()
       }
     }, [fileDiffs])
 

@@ -60,13 +60,13 @@ function areGroupPropsEqual(
     prev.subChatId === next.subChatId &&
     prev.isMobile === next.isMobile &&
     prev.sandboxSetupStatus === next.sandboxSetupStatus &&
-    prev.stickyTopClass === next.stickyTopClass &&
-    prev.sandboxSetupError === next.sandboxSetupError &&
-    prev.onRetrySetup === next.onRetrySetup &&
-    prev.UserBubbleComponent === next.UserBubbleComponent &&
-    prev.ToolCallComponent === next.ToolCallComponent &&
-    prev.MessageGroupWrapper === next.MessageGroupWrapper &&
-    prev.toolRegistry === next.toolRegistry
+  prev.stickyTopClass === next.stickyTopClass &&
+  prev.sandboxSetupError === next.sandboxSetupError &&
+  prev.onRetrySetup === next.onRetrySetup &&
+  prev.UserBubbleComponent === next.UserBubbleComponent &&
+  prev.ToolCallComponent === next.ToolCallComponent &&
+  prev.MessageGroupWrapper === next.MessageGroupWrapper &&
+  prev.toolRegistry === next.toolRegistry
   )
 }
 

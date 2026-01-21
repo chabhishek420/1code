@@ -1,20 +1,9 @@
 "use client"
 
 import {
-  ChatMarkdownRenderer,
-  stripEmojis,
+  stripEmojis
 } from "../../../components/chat-markdown-renderer"
-import { MemoizedTextPart } from "./memoized-text-part"
 import { Button } from "../../../components/ui/button"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "../../../components/ui/dropdown-menu"
 import {
   AgentIcon,
   AttachIcon,
@@ -29,18 +18,14 @@ import {
   IconSpinner,
   IconTextUndo,
   PauseIcon,
-  PlanIcon,
-  PullRequestIcon,
-  VolumeIcon,
+  VolumeIcon
 } from "../../../components/ui/icons"
 import { Kbd } from "../../../components/ui/kbd"
 import {
   PromptInput,
-  PromptInputActions,
-  PromptInputContextItems,
+  PromptInputActions
 } from "../../../components/ui/prompt-input"
 import { ResizableSidebar } from "../../../components/ui/resizable-sidebar"
-import { TextShimmer } from "../../../components/ui/text-shimmer"
 import {
   Tooltip,
   TooltipContent,
@@ -54,39 +39,40 @@ import { atom, useAtom, useAtomValue, useSetAtom } from "jotai"
 import {
   ArrowDown,
   ChevronDown,
-  ChevronUp,
-  Columns2,
-  Eye,
-  GitCommitHorizontal,
-  GitMerge,
   ListTree,
-  MoreHorizontal,
-  Rows2,
-  TerminalSquare,
+  TerminalSquare
 } from "lucide-react"
-import { motion, AnimatePresence } from "motion/react"
+import { AnimatePresence, motion } from "motion/react"
 import {
-  createContext,
   memo,
   useCallback,
-  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
-  useState,
+  useState
 } from "react"
-import { createPortal } from "react-dom"
 import { toast } from "sonner"
+import type { FileStatus } from "../../../../shared/changes-types"
+import { getQueryClient } from "../../../contexts/TRPCProvider"
 import { trackMessageSent } from "../../../lib/analytics"
 import { apiFetch } from "../../../lib/api-fetch"
-import { soundNotificationsEnabledAtom, isDesktopAtom, isFullscreenAtom } from "../../../lib/atoms"
+import {
+  customClaudeConfigAtom,
+  isDesktopAtom, isFullscreenAtom,
+  normalizeCustomClaudeConfig, soundNotificationsEnabledAtom
+} from "../../../lib/atoms"
+import { useFileChangeListener, useGitWatcher } from "../../../lib/hooks/use-file-change-listener"
 import { appStore } from "../../../lib/jotai-store"
 import { api } from "../../../lib/mock-api"
 import { trpc, trpcClient } from "../../../lib/trpc"
-import { getQueryClient } from "../../../contexts/TRPCProvider"
 import { cn } from "../../../lib/utils"
-import { getShortcutKey, isDesktopApp } from "../../../lib/utils/platform"
+import { isDesktopApp } from "../../../lib/utils/platform"
+import { ChangesPanel } from "../../changes"
+import { DiffCenterPeekDialog } from "../../changes/components/diff-center-peek-dialog"
+import { DiffFullPageView } from "../../changes/components/diff-full-page-view"
+import { DiffSidebarHeader } from "../../changes/components/diff-sidebar-header"
+import { getStatusIndicator } from "../../changes/utils/status"
 import { terminalSidebarOpenAtom } from "../../terminal/atoms"
 import { TerminalSidebar } from "../../terminal/terminal-sidebar"
 import {
@@ -101,6 +87,7 @@ import {
   clearLoading,
   compactingSubChatsAtom,
   diffSidebarOpenAtomFamily,
+  diffViewDisplayModeAtom,
   filteredDiffFilesAtom,
   filteredSubChatIdAtom,
   isPlanModeAtom,
@@ -108,62 +95,57 @@ import {
   lastSelectedModelIdAtom,
   loadingSubChatsAtom,
   pendingAuthRetryMessageAtom,
+  pendingConflictResolutionMessageAtom,
+  pendingPlanApprovalsAtom,
   pendingPrMessageAtom,
   pendingReviewMessageAtom,
-  pendingConflictResolutionMessageAtom,
   pendingUserQuestionsAtom,
-  pendingPlanApprovalsAtom,
   QUESTIONS_SKIPPED_MESSAGE,
   selectedAgentChatIdAtom,
   selectedCommitAtom,
-  type SelectedCommit,
   setLoading,
   subChatFilesAtom,
   undoStackAtom,
-  type UndoItem,
-  diffViewDisplayModeAtom,
-  type DiffViewDisplayMode,
+  type SelectedCommit
 } from "../atoms"
-import {
-  AgentsSlashCommand,
-  COMMAND_PROMPTS,
-  type SlashCommandOption,
-} from "../commands"
 import { AgentSendButton } from "../components/agent-send-button"
 import { PreviewSetupHoverCard } from "../components/preview-setup-hover-card"
+import { TextSelectionProvider } from "../context/text-selection-context"
 import { useAgentsFileUpload } from "../hooks/use-agents-file-upload"
-import { useTextContextSelection } from "../hooks/use-text-context-selection"
 import { useChangedFilesTracking } from "../hooks/use-changed-files-tracking"
 import { useDesktopNotifications } from "../hooks/use-desktop-notifications"
 import { useFocusInputOnEnter } from "../hooks/use-focus-input-on-enter"
 import { useHaptic } from "../hooks/use-haptic"
+import { useTextContextSelection } from "../hooks/use-text-context-selection"
 import { useToggleFocusOnCmdEsc } from "../hooks/use-toggle-focus-on-cmd-esc"
-import { useFileChangeListener, useGitWatcher } from "../../../lib/hooks/use-file-change-listener"
+import {
+  clearSubChatDraft,
+  getSubChatDraftFull
+} from "../lib/drafts"
 import { IPCChatTransport } from "../lib/ipc-chat-transport"
 import {
-  AgentsFileMention,
-  AgentsMentionsEditor,
-  type AgentsMentionsEditorHandle,
-  type FileMentionOption,
+  createQueueItem,
+  generateQueueId,
+  toQueuedFile,
+  toQueuedImage,
+  toQueuedTextContext,
+} from "../lib/queue-utils"
+import {
+  type AgentsMentionsEditorHandle
 } from "../mentions"
+import {
+  ChatSearchBar,
+  chatSearchCurrentMatchAtom,
+  SearchHighlightProvider
+} from "../search"
 import { agentChatStore } from "../stores/agent-chat-store"
-import { useMessageQueueStore, EMPTY_QUEUE } from "../stores/message-queue-store"
+import { EMPTY_QUEUE, useMessageQueueStore } from "../stores/message-queue-store"
+import { clearSubChatCaches, isRollingBackAtom, rollbackHandlerAtom, syncMessagesWithStatusAtom } from "../stores/message-store"
 import { useStreamingStatusStore } from "../stores/streaming-status-store"
 import {
   useAgentSubChatStore,
   type SubChatMeta,
 } from "../stores/sub-chat-store"
-import { clearSubChatCaches } from "../stores/message-store"
-import {
-  createQueueItem,
-  generateQueueId,
-  toQueuedImage,
-  toQueuedFile,
-  toQueuedTextContext,
-} from "../lib/queue-utils"
-import { AgentAskUserQuestionTool } from "../ui/agent-ask-user-question-tool"
-import { AgentBashTool } from "../ui/agent-bash-tool"
-import { AgentContextIndicator } from "../ui/agent-context-indicator"
 import {
   AgentDiffView,
   diffViewModeAtom,
@@ -171,64 +153,22 @@ import {
   type AgentDiffViewRef,
   type ParsedDiffFile,
 } from "../ui/agent-diff-view"
-import { ChangesPanel } from "../../changes"
-import { getStatusIndicator } from "../../changes/utils/status"
-import type { FileStatus } from "../../../../shared/changes-types"
-import { CollapsedCommitBar } from "../../changes/components/collapsed-commit-bar"
-import { DiffSidebarHeader } from "../../changes/components/diff-sidebar-header"
-import { DiffCenterPeekDialog } from "../../changes/components/diff-center-peek-dialog"
-import { DiffFullPageView } from "../../changes/components/diff-full-page-view"
-import { AgentEditTool } from "../ui/agent-edit-tool"
-import { AgentExitPlanModeTool } from "../ui/agent-exit-plan-mode-tool"
-import { AgentExploringGroup } from "../ui/agent-exploring-group"
-import { AgentFileItem } from "../ui/agent-file-item"
-import { AgentImageItem } from "../ui/agent-image-item"
-import { TextSelectionPopover } from "../ui/text-selection-popover"
-import { TextSelectionProvider } from "../context/text-selection-context"
-import {
-  AgentMessageUsage,
-  type AgentMessageMetadata,
-} from "../ui/agent-message-usage"
-import { AgentPlanTool } from "../ui/agent-plan-tool"
 import { AgentPreview } from "../ui/agent-preview"
-import { AgentTaskTool } from "../ui/agent-task-tool"
-import { AgentThinkingTool } from "../ui/agent-thinking-tool"
-import { AgentTodoTool } from "../ui/agent-todo-tool"
+import { AgentQueueIndicator } from "../ui/agent-queue-indicator"
 import { AgentToolCall } from "../ui/agent-tool-call"
-import { AgentToolRegistry, getToolStatus } from "../ui/agent-tool-registry"
+import { AgentToolRegistry } from "../ui/agent-tool-registry"
 import { AgentUserMessageBubble } from "../ui/agent-user-message-bubble"
 import { AgentUserQuestion } from "../ui/agent-user-question"
-import { AgentWebFetchTool } from "../ui/agent-web-fetch-tool"
-import { AgentWebSearchCollapsible } from "../ui/agent-web-search-collapsible"
 import { AgentsHeaderControls } from "../ui/agents-header-controls"
-import { ChatInputArea } from "./chat-input-area"
-import { MemoizedAssistantMessages } from "./messages-list"
-import { ChatDataSync } from "./chat-data-sync"
-import { IsolatedMessagesSection } from "./isolated-messages-section"
-import { hasMessagesAtom, isStreamingAtom, hasUnapprovedPlanAtom, messageTokenDataAtom, syncMessagesWithStatusAtom } from "../stores/message-store"
 import { ChatTitleEditor } from "../ui/chat-title-editor"
-import {
-  ChatSearchBar,
-  SearchHighlightProvider,
-  chatSearchCurrentMatchAtom,
-  toggleSearchAtom,
-} from "../search"
 import { MobileChatHeader } from "../ui/mobile-chat-header"
 import { SubChatSelector } from "../ui/sub-chat-selector"
 import { SubChatStatusCard } from "../ui/sub-chat-status-card"
-import { AgentQueueIndicator } from "../ui/agent-queue-indicator"
+import { TextSelectionPopover } from "../ui/text-selection-popover"
 import { autoRenameAgentChat } from "../utils/auto-rename"
-import { handlePasteEvent } from "../utils/paste-text"
 import { generateCommitToPrMessage, generatePrMessage, generateReviewMessage } from "../utils/pr-message"
-import {
-  saveSubChatDraft,
-  clearSubChatDraft,
-  getSubChatDraftFull,
-} from "../lib/drafts"
-import {
-  customClaudeConfigAtom,
-  normalizeCustomClaudeConfig,
-} from "../../../lib/atoms"
+import { ChatInputArea } from "./chat-input-area"
+import { IsolatedMessagesSection } from "./isolated-messages-section"
 const clearSubChatSelectionAtom = atom(null, () => {})
 const isSubChatMultiSelectModeAtom = atom(false)
 const selectedSubChatIdsAtom = atom(new Set<string>())
@@ -720,6 +660,38 @@ function PlayButton({
   )
 }
 
+// Rollback button component for reverting to a previous message state
+function RollbackButton({
+  disabled = false,
+  onRollback,
+  isRollingBack = false,
+}: {
+  disabled?: boolean
+  onRollback: () => void
+  isRollingBack?: boolean
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          onClick={onRollback}
+          disabled={disabled || isRollingBack}
+          tabIndex={-1}
+          className={cn(
+            "p-1.5 rounded-md transition-[background-color,transform] duration-150 ease-out hover:bg-accent active:scale-[0.97]",
+            isRollingBack && "opacity-50 cursor-not-allowed",
+          )}
+        >
+          <IconTextUndo className="w-3.5 h-3.5 text-muted-foreground" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        {isRollingBack ? "Rolling back..." : "Rollback to here"}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 // Isolated scroll-to-bottom button - uses own scroll listener to avoid re-renders of parent
 const ScrollToBottomButton = memo(function ScrollToBottomButton({
   containerRef,
@@ -950,7 +922,7 @@ interface DiffSidebarContentProps {
   setDiffStats: (stats: { isLoading: boolean; hasChanges: boolean; fileCount: number; additions: number; deletions: number }) => void
   diffContent: string | null
   parsedFileDiffs: unknown
-  prefetchedFileContents: Map<string, string> | undefined
+  prefetchedFileContents: Record<string, string> | undefined
   setDiffCollapseState: (state: Map<string, boolean>) => void
   diffViewRef: React.RefObject<{ expandAll: () => void; collapseAll: () => void } | null>
   agentChat: { prUrl?: string; prNumber?: number } | null | undefined
@@ -1138,7 +1110,7 @@ function DiffSidebarContent({
   const shouldUseCommitDiff = activeTab === "history" && selectedCommit
   const effectiveDiff = shouldUseCommitDiff && commitFileDiff ? commitFileDiff : diffContent
   const effectiveParsedFiles = shouldUseCommitDiff ? null : parsedFileDiffs
-  const effectivePrefetchedContents = shouldUseCommitDiff ? new Map() : prefetchedFileContents
+  const effectivePrefetchedContents = shouldUseCommitDiff ? {} : prefetchedFileContents
 
   if (isNarrow) {
     // Count changed files for collapsed header
@@ -1376,6 +1348,7 @@ function ChatViewInner({
   isFirstSubChat,
   onAutoRename,
   onCreateNewSubChat,
+  refreshDiff,
   teamId,
   repository,
   streamId,
@@ -1397,6 +1370,7 @@ function ChatViewInner({
   isFirstSubChat: boolean
   onAutoRename: (userMessage: string, subChatId: string) => void
   onCreateNewSubChat?: () => void
+  refreshDiff?: () => void
   teamId?: string
   repository?: string
   streamId?: string | null
@@ -1454,6 +1428,9 @@ function ChatViewInner({
     setTtsPlaybackRate(rate)
     localStorage.setItem("tts-playback-rate", String(rate))
   }, [])
+
+  // Rollback state
+  const [isRollingBack, setIsRollingBack] = useState(false)
 
   // Check if user is at bottom of chat (like canvas)
   const isAtBottom = useCallback(() => {
@@ -1636,7 +1613,11 @@ function ChatViewInner({
     // Dependencies: Only subChatId - setIsPlanMode is stable, useAgentSubChatStore is external
   }, [subChatId, setIsPlanMode])
 
-  // Cleanup message caches when switching sub-chats to prevent memory leaks
+  // NOTE: We no longer clear caches on deactivation.
+  // With proper subChatId isolation, each chat's caches are separate.
+  // Caches are only cleared on unmount (when tab is evicted from keep-alive pool).
+
+  // Cleanup message caches on unmount (when tab is evicted from keep-alive)
   useEffect(() => {
     const currentSubChatId = subChatId
     return () => {
@@ -1768,7 +1749,7 @@ function ChatViewInner({
 
   // Use subChatId as stable key to prevent HMR-induced duplicate resume requests
   // resume: !!streamId to reconnect to active streams (background streaming support)
-  const { messages, sendMessage, status, stop, regenerate } = useChat({
+  const { messages, sendMessage, status, stop, regenerate, setMessages } = useChat({
     id: subChatId,
     chat,
     resume: !!streamId,
@@ -2239,15 +2220,79 @@ function ChatViewInner({
       }
     }
   }, [messages, isStreaming, parentChatId])
-
-  // Track changed files from Edit/Write tool calls
-  // Only recalculates after streaming ends (not during streaming)
-  const { changedFiles: changedFilesForSubChat } = useChangedFilesTracking(
+  const { changedFiles: changedFilesForSubChat, recomputeChangedFiles } = useChangedFilesTracking(
     messages,
     subChatId,
     isStreaming,
     parentChatId,
   )
+
+  // Rollback handler - truncates messages to the clicked assistant message and restores git state
+  // The SDK UUID from the last assistant message will be used for resumeSessionAt on next send
+  const handleRollback = useCallback(
+    async (assistantMsg: (typeof messages)[0]) => {
+      if (isRollingBack) {
+        toast.error("Rollback already in progress")
+        return
+      }
+      if (isStreaming) {
+        toast.error("Cannot rollback while streaming")
+        return
+      }
+
+      const sdkUuid = (assistantMsg.metadata as any)?.sdkMessageUuid
+      if (!sdkUuid) {
+        toast.error("Cannot rollback: message has no SDK UUID")
+        return
+      }
+
+      setIsRollingBack(true)
+
+      try {
+        // Single call handles both message truncation and git rollback
+        const result = await trpcClient.chats.rollbackToMessage.mutate({
+          subChatId,
+          sdkMessageUuid: sdkUuid,
+        })
+
+        if (!result.success) {
+          toast.error(`Failed to rollback: ${result.error}`)
+          setIsRollingBack(false)
+          return
+        }
+
+        // Update local state with truncated messages from server
+        setMessages(result.messages)
+        recomputeChangedFiles(result.messages)
+        refreshDiff?.()
+      } catch (error) {
+        console.error("[handleRollback] Error:", error)
+        toast.error("Failed to rollback")
+      } finally {
+        setIsRollingBack(false)
+      }
+    },
+    [
+      isRollingBack,
+      isStreaming,
+      setMessages,
+      subChatId,
+      recomputeChangedFiles,
+      refreshDiff,
+    ],
+  )
+
+  // Expose rollback handler/state via atoms for message action bar
+  const setRollbackHandler = useSetAtom(rollbackHandlerAtom)
+  useEffect(() => {
+    setRollbackHandler(() => handleRollback)
+    return () => setRollbackHandler(null)
+  }, [handleRollback, setRollbackHandler])
+
+  const setIsRollingBackAtom = useSetAtom(isRollingBackAtom)
+  useEffect(() => {
+    setIsRollingBackAtom(isRollingBack)
+  }, [isRollingBack, setIsRollingBackAtom])
 
   // ESC, Ctrl+C and Cmd+Shift+Backspace handler for stopping stream
   useEffect(() => {
@@ -2956,10 +3001,15 @@ function ChatViewInner({
       : CHAT_LAYOUT.stickyTopSidebarClosed
 
   // Sync messages to Jotai store for isolated rendering
+  // CRITICAL: Only sync from the ACTIVE tab to prevent overwriting global atoms
+  // Each tab has its own useChat() instance, but global atoms (messageIdsAtom, etc.) are shared.
+  // Only the active tab should update these global atoms.
   const syncMessages = useSetAtom(syncMessagesWithStatusAtom)
   useLayoutEffect(() => {
-    syncMessages({ messages, status })
-  }, [messages, status, syncMessages])
+    // Skip syncing for inactive tabs - they shouldn't update global atoms
+    if (!isActive) return
+    syncMessages({ messages, status, subChatId })
+  }, [messages, status, subChatId, syncMessages, isActive])
 
   // Sync status to global streaming status store for queue processing
   const setStreamingStatus = useStreamingStatusStore((s) => s.setStatus)
@@ -3405,9 +3455,10 @@ export function ChatView({
   const tabsToRender = useMemo(() => {
     if (!activeSubChatId) return []
 
-    // Create Set of valid sub-chat IDs for THIS workspace
-    // agentSubChats is already filtered by chatId from tRPC query
-    const validSubChatIds = new Set(agentSubChats.map(sc => sc.id))
+    // Use allSubChats from Zustand store for validation (not agentSubChats from tRPC)
+    // allSubChats is updated optimistically when creating new sub-chats,
+    // while agentSubChats from tRPC query may be stale during race conditions
+    const validSubChatIds = new Set(allSubChats.map(sc => sc.id))
 
     // If active sub-chat doesn't belong to this workspace → return []
     // This prevents rendering sub-chats from another workspace during race condition
@@ -3441,7 +3492,7 @@ export function ChatView({
 
     // Return in validOpenIds order for consistent rendering
     return validOpenIds.filter(id => mustRender.has(id))
-  }, [activeSubChatId, pinnedSubChatIds, openSubChatIds, agentSubChats])
+  }, [activeSubChatId, pinnedSubChatIds, openSubChatIds, allSubChats])
 
   // Get PR status when PR exists (for checking if it's open/merged/closed)
   const hasPrNumber = !!agentChat?.prNumber
@@ -3943,6 +3994,21 @@ Make sure to preserve all functionality from both branches when resolving confli
     { enabled: !!worktreePath && isDiffSidebarOpen, staleTime: 30000 }
   )
 
+  // Refetch git status and diff stats when window gains focus
+  useEffect(() => {
+    if (!worktreePath || !isDiffSidebarOpen) return
+
+    const handleWindowFocus = () => {
+      // Refetch git status
+      refetchGitStatus()
+      // Refetch diff stats to get latest changes
+      fetchDiffStats()
+    }
+
+    window.addEventListener('focus', handleWindowFocus)
+    return () => window.removeEventListener('focus', handleWindowFocus)
+  }, [worktreePath, isDiffSidebarOpen, refetchGitStatus, fetchDiffStats])
+
   // Sync parsedFileDiffs with git status - clear diff data when all files are committed
   // This fixes the issue where diff sidebar shows stale files after external git commit
   useEffect(() => {
@@ -4231,6 +4297,29 @@ Make sure to preserve all functionality from both branches when resolving confli
       mode: subChatMode,
     })
     const newId = newSubChat.id
+    utils.agents.getAgentChat.invalidate({ chatId })
+
+    // Optimistic update: add new sub-chat to React Query cache immediately
+    // This is CRITICAL for workspace isolation - without this, the new sub-chat
+    // won't be in validSubChatIds and will be filtered out by tabsToRender
+    utils.agents.getAgentChat.setData({ chatId }, (old) => {
+      if (!old) return old
+      return {
+        ...old,
+        subChats: [
+          ...(old.subChats || []),
+          {
+            id: newId,
+            name: "New Chat",
+            mode: subChatMode,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            messages: null,
+            stream_id: null,
+          },
+        ],
+      }
+    })
 
     // Track this subchat as just created for typewriter effect
     setJustCreatedIds((prev) => new Set([...prev, newId]))
@@ -4337,6 +4426,7 @@ Make sure to preserve all functionality from both branches when resolving confli
     worktreePath,
     chatId,
     isPlanMode,
+    utils,
     setSubChatUnseenChanges,
     selectedChatId,
     setUnseenChanges,
@@ -4907,8 +4997,9 @@ Make sure to preserve all functionality from both branches when resolving confli
                 const isFirstSubChat = getFirstSubChatId(agentSubChats) === subChatId
 
                 // Defense in depth: double-check workspace ownership
-                // Protects against edge cases if tabsToRender contains invalid ID
-                const belongsToWorkspace = agentSubChats.some(sc => sc.id === subChatId)
+                // Use allSubChats (Zustand) instead of agentSubChats (tRPC) because
+                // new sub-chats are added to Zustand immediately but tRPC query may be stale
+                const belongsToWorkspace = allSubChats.some(sc => sc.id === subChatId)
 
                 if (!chat || !belongsToWorkspace) return null
 

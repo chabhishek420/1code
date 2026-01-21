@@ -1130,4 +1130,3 @@ export const SimpleIsolatedMessagesList = memo(function SimpleIsolatedMessagesLi
     </>
   )
 }, areSimpleListPropsEqual)
-

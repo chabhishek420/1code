@@ -64,6 +64,10 @@ export const streamingMessageIdAtom = atom<string | null>(null)
 // Chat status atom
 export const chatStatusAtom = atom<string>("ready")
 
+// Rollback handler/state (optional) to avoid prop drilling
+export const rollbackHandlerAtom = atom<((msg: any) => void) | null>(null)
+export const isRollingBackAtom = atom<boolean>(false)
+
 // Current subChatId - used to isolate caches per chat
 export const currentSubChatIdAtom = atom<string>("default")
 

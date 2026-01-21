@@ -2,8 +2,8 @@
 
 import { memo, useCallback, useRef, useState, useEffect } from "react"
 import { createPortal } from "react-dom"
-import { useAtom, useAtomValue, useSetAtom } from "jotai"
-import { ChevronDown } from "lucide-react"
+import { useAtom, useAtomValue } from "jotai"
+import { ChevronDown, WifiOff } from "lucide-react"
 
 import { Button } from "../../../components/ui/button"
 import {
@@ -50,13 +50,51 @@ import { type SubChatFileChange } from "../atoms"
 import {
   customClaudeConfigAtom,
   normalizeCustomClaudeConfig,
+  activeConfigAtom,
+  autoOfflineModeAtom,
+  showOfflineModeFeaturesAtom,
 } from "../../../lib/atoms"
+import { trpc } from "../../../lib/trpc"
 
-// Claude models (same as in active-chat.tsx)
-const claudeModels = [
-  { id: "sonnet", name: "Sonnet" },
-  { id: "opus", name: "Opus" },
-]
+// Hook to get available models (including offline model if Ollama is available and debug enabled)
+function useAvailableModels() {
+  const { data: ollamaStatus } = trpc.ollama.getStatus.useQuery(undefined, {
+    refetchInterval: 30000,
+  })
+  const showOfflineFeatures = useAtomValue(showOfflineModeFeaturesAtom)
+
+  const baseModels = [
+    { id: "sonnet", name: "Sonnet" },
+    { id: "opus", name: "Opus" },
+  ]
+
+  const isOffline = ollamaStatus ? !ollamaStatus.internet.online : false
+  const hasOllama = ollamaStatus?.ollama.available && !!ollamaStatus.ollama.recommendedModel
+
+  // Only show offline model if:
+  // 1. Debug flag is enabled (showOfflineFeatures)
+  // 2. Ollama is available
+  // 3. User is actually offline
+  if (showOfflineFeatures && hasOllama && isOffline) {
+    return {
+      models: [
+        ...baseModels,
+        {
+          id: "offline",
+          name: ollamaStatus.ollama.recommendedModel,
+        },
+      ],
+      isOffline,
+      hasOllama: true,
+    }
+  }
+
+  return {
+    models: baseModels,
+    isOffline,
+    hasOllama: false,
+  }
+}
 
 export interface ChatInputAreaProps {
   // Editor ref - passed from parent for external access
@@ -298,13 +336,40 @@ export const ChatInputArea = memo(function ChatInputArea({
   // Model dropdown state
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
   const [lastSelectedModelId, setLastSelectedModelId] = useAtom(lastSelectedModelIdAtom)
+  const availableModels = useAvailableModels()
+  const autoOfflineMode = useAtomValue(autoOfflineModeAtom)
+  const showOfflineFeatures = useAtomValue(showOfflineModeFeaturesAtom)
   const [selectedModel, setSelectedModel] = useState(
-    () => claudeModels.find((m) => m.id === lastSelectedModelId) || claudeModels[1],
+    () => availableModels.models.find((m) => m.id === lastSelectedModelId) || availableModels.models[1],
   )
   const customClaudeConfig = useAtomValue(customClaudeConfigAtom)
   const normalizedCustomClaudeConfig =
     normalizeCustomClaudeConfig(customClaudeConfig)
   const hasCustomClaudeConfig = Boolean(normalizedCustomClaudeConfig)
+
+  // Auto-switch model based on network status (only if offline features enabled)
+  useEffect(() => {
+    if (hasCustomClaudeConfig || !autoOfflineMode || !showOfflineFeatures) return
+
+    // Offline + Ollama available → switch to offline model
+    if (availableModels.isOffline && availableModels.hasOllama) {
+      const offlineModel = availableModels.models.find(m => m.id === "offline")
+      if (offlineModel && selectedModel?.id !== "offline") {
+        console.log('[UI] Auto-switching to offline model')
+        setSelectedModel(offlineModel)
+        setLastSelectedModelId("offline")
+      }
+    }
+    // Online + currently on offline model → switch back to last Claude model
+    else if (!availableModels.isOffline && selectedModel?.id === "offline") {
+      const claudeModel = availableModels.models.find(m => m.id === "sonnet") || availableModels.models[0]
+      if (claudeModel) {
+        console.log('[UI] Auto-switching back to Claude model')
+        setSelectedModel(claudeModel)
+        setLastSelectedModelId(claudeModel.id)
+      }
+    }
+  }, [availableModels.isOffline, availableModels.hasOllama, autoOfflineMode, hasCustomClaudeConfig, showOfflineFeatures, availableModels.models, selectedModel?.id, setLastSelectedModelId])
 
   // Plan mode - global atom
   const [isPlanMode, setIsPlanMode] = useAtom(isPlanModeAtom)
@@ -816,25 +881,41 @@ export const ChatInputArea = memo(function ChatInputArea({
                         <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
                       </button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start" className="w-[150px]">
-                      {claudeModels.map((model) => {
+                    <DropdownMenuContent align="start" className="w-[200px]">
+                      {availableModels.models.map((model) => {
                         const isSelected = selectedModel?.id === model.id
+                        const isOfflineModel = model.id === "offline"
+                        // Disable non-offline models when offline
+                        const isDisabled = availableModels.isOffline && !isOfflineModel
                         return (
                           <DropdownMenuItem
                             key={model.id}
                             onClick={() => {
-                              setSelectedModel(model)
-                              setLastSelectedModelId(model.id)
+                              if (!isDisabled) {
+                                setSelectedModel(model)
+                                setLastSelectedModelId(model.id)
+                              }
                             }}
                             className="gap-2 justify-between"
+                            disabled={isDisabled}
                           >
                             <div className="flex items-center gap-1.5">
-                              <ClaudeCodeIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                              {isOfflineModel ? (
+                                <WifiOff className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                              ) : (
+                                <ClaudeCodeIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                              )}
                               <span>
-                                {model.name}{" "}
-                                <span className="text-muted-foreground">
-                                  4.5
-                                </span>
+                                {isOfflineModel ? (
+                                  model.name
+                                ) : (
+                                  <>
+                                    {model.name}{" "}
+                                    <span className="text-muted-foreground">
+                                      4.5
+                                    </span>
+                                  </>
+                                )}
                               </span>
                             </div>
                             {isSelected && (

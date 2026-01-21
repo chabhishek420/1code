@@ -1,13 +1,13 @@
 import { useAtom } from "jotai"
-import { useState, useEffect } from "react"
+import { useEffect, useState } from "react"
 import {
-  extendedThinkingEnabledAtom,
-  soundNotificationsEnabledAtom,
   analyticsOptOutAtom,
   ctrlTabTargetAtom,
+  extendedThinkingEnabledAtom,
+  soundNotificationsEnabledAtom,
   type CtrlTabTarget,
 } from "../../../lib/atoms"
-import { Switch } from "../../ui/switch"
+import { Kbd } from "../../ui/kbd"
 import {
   Select,
   SelectContent,
