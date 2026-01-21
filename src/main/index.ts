@@ -26,7 +26,7 @@ const IS_DEV = !!process.env.ELECTRON_RENDERER_URL
 
 // Deep link protocol (must match package.json build.protocols.schemes)
 // Use different protocol in dev to avoid conflicts with production app
-const PROTOCOL = IS_DEV ? "twentyfirst-agents-dev" : "twentyfirst-agents"
+const PROTOCOL = IS_DEV ? "aadivar-1code-dev" : "aadivar-1code"
 
 // Set dev mode userData path BEFORE requestSingleInstanceLock()
 // This ensures dev and prod have separate instance locks

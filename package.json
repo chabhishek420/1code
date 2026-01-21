@@ -123,14 +123,14 @@
     "vite": "^6.3.4"
   },
   "build": {
-    "appId": "dev.21st.agents",
+    "appId": "dev.aadivar.1code",
     "productName": "1Code",
     "npmRebuild": true,
     "protocols": [
       {
         "name": "1Code",
         "schemes": [
-          "twentyfirst-agents"
+          "aadivar-1code"
         ]
       }
     ],

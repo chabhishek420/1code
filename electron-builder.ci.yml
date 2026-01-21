@@ -2,7 +2,7 @@
 # Used by GitHub Actions for self-hosted fork builds
 
 productName: 1Code
-appId: dev.21st.agents
+appId: dev.aadivar.1code
 
 directories:
   buildResources: build

@@ -5,7 +5,7 @@ import { getAuthManager } from "../../../index"
 
 // Protocol constant (must match main/index.ts)
 const IS_DEV = !!process.env.ELECTRON_RENDERER_URL
-const PROTOCOL = IS_DEV ? "twentyfirst-agents-dev" : "twentyfirst-agents"
+const PROTOCOL = IS_DEV ? "aadivar-1code-dev" : "aadivar-1code"
 
 export const debugRouter = router({
   /**
