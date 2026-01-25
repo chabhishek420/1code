@@ -1,15 +1,16 @@
 "use client"
 
-import { memo, useCallback, useRef, useState, useEffect } from "react"
-import { createPortal } from "react-dom"
 import { useAtom, useAtomValue } from "jotai"
-import { ChevronDown, WifiOff } from "lucide-react"
+import { ChevronDown, Zap } from "lucide-react"
+import { memo, useCallback, useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 
 import { Button } from "../../../components/ui/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../../../components/ui/dropdown-menu"
 import {
@@ -18,6 +19,7 @@ import {
   CheckIcon,
   ClaudeCodeIcon,
   PlanIcon,
+  ThinkingIcon,
 } from "../../../components/ui/icons"
 import { Kbd } from "../../../components/ui/kbd"
 import {
@@ -25,65 +27,66 @@ import {
   PromptInputActions,
   PromptInputContextItems,
 } from "../../../components/ui/prompt-input"
-import { cn } from "../../../lib/utils"
-import { isPlanModeAtom, lastSelectedModelIdAtom } from "../atoms"
-import { AgentsSlashCommand, COMMAND_PROMPTS, type SlashCommandOption } from "../commands"
-import { AgentSendButton } from "../components/agent-send-button"
+import { Switch } from "../../../components/ui/switch"
 import {
+  autoOfflineModeAtom,
+  customClaudeConfigAtom,
+  extendedThinkingEnabledAtom,
+  normalizeCustomClaudeConfig,
+  selectedOllamaModelAtom,
+  showOfflineModeFeaturesAtom
+} from "../../../lib/atoms"
+import { trpc } from "../../../lib/trpc"
+import { cn } from "../../../lib/utils"
+import { isPlanModeAtom, lastSelectedModelIdAtom, type SubChatFileChange } from "../atoms"
+import { AgentsSlashCommand, type SlashCommandOption } from "../commands"
+import { AgentSendButton } from "../components/agent-send-button"
+import type { UploadedFile, UploadedImage } from "../hooks/use-agents-file-upload"
+import {
+  clearSubChatDraft,
+  saveSubChatDraftWithAttachments,
+} from "../lib/drafts"
+import { CLAUDE_MODELS } from "../lib/models"
+import type { DiffTextContext, SelectedTextContext } from "../lib/queue-utils"
+import {
+  AgentsFileMention,
   AgentsMentionsEditor,
   type AgentsMentionsEditorHandle,
   type FileMentionOption,
 } from "../mentions"
-import { AgentsFileMention } from "../mentions"
 import { AgentContextIndicator, type MessageTokenData } from "../ui/agent-context-indicator"
+import { AgentDiffTextContextItem } from "../ui/agent-diff-text-context-item"
 import { AgentFileItem } from "../ui/agent-file-item"
 import { AgentImageItem } from "../ui/agent-image-item"
+import { AgentPastedTextItem } from "../ui/agent-pasted-text-item"
 import { AgentTextContextItem } from "../ui/agent-text-context-item"
-import type { SelectedTextContext } from "../lib/queue-utils"
-import type { UploadedImage, UploadedFile } from "../hooks/use-agents-file-upload"
 import { handlePasteEvent } from "../utils/paste-text"
-import {
-  saveSubChatDraftWithAttachments,
-  clearSubChatDraft,
-} from "../lib/drafts"
-import { type SubChatFileChange } from "../atoms"
-import {
-  customClaudeConfigAtom,
-  normalizeCustomClaudeConfig,
-  activeConfigAtom,
-  autoOfflineModeAtom,
-  showOfflineModeFeaturesAtom,
-} from "../../../lib/atoms"
-import { trpc } from "../../../lib/trpc"
+import type { PastedTextFile } from "../hooks/use-pasted-text-files"
 
-// Hook to get available models (including offline model if Ollama is available and debug enabled)
+// Hook to get available models (including offline models if Ollama is available and debug enabled)
 function useAvailableModels() {
-  const { data: ollamaStatus } = trpc.ollama.getStatus.useQuery(undefined, {
-    refetchInterval: 30000,
-  })
   const showOfflineFeatures = useAtomValue(showOfflineModeFeaturesAtom)
+  const { data: ollamaStatus } = trpc.ollama.getStatus.useQuery(undefined, {
+    refetchInterval: showOfflineFeatures ? 30000 : false,
+    enabled: showOfflineFeatures, // Only query Ollama when offline mode is enabled
+  })
 
-  const baseModels = [
-    { id: "sonnet", name: "Sonnet" },
-    { id: "opus", name: "Opus" },
-  ]
+  const baseModels = CLAUDE_MODELS
 
   const isOffline = ollamaStatus ? !ollamaStatus.internet.online : false
-  const hasOllama = ollamaStatus?.ollama.available && !!ollamaStatus.ollama.recommendedModel
+  const hasOllama = ollamaStatus?.ollama.available && (ollamaStatus.ollama.models?.length ?? 0) > 0
+  const ollamaModels = ollamaStatus?.ollama.models || []
+  const recommendedModel = ollamaStatus?.ollama.recommendedModel
 
-  // Only show offline model if:
+  // Only show offline models if:
   // 1. Debug flag is enabled (showOfflineFeatures)
-  // 2. Ollama is available
+  // 2. Ollama is available with models
   // 3. User is actually offline
   if (showOfflineFeatures && hasOllama && isOffline) {
     return {
-      models: [
-        ...baseModels,
-        {
-          id: "offline",
-          name: ollamaStatus.ollama.recommendedModel,
-        },
-      ],
+      models: baseModels,
+      ollamaModels,
+      recommendedModel,
       isOffline,
       hasOllama: true,
     }
@@ -91,6 +94,8 @@ function useAvailableModels() {
 
   return {
     models: baseModels,
+    ollamaModels: [] as string[],
+    recommendedModel: undefined as string | undefined,
     isOffline,
     hasOllama: false,
   }
@@ -105,12 +110,10 @@ export interface ChatInputAreaProps {
   onSend: () => void
   onForceSend: () => void // Opt+Enter: stop stream and send immediately, bypassing queue
   onStop: () => Promise<void>
-  onApprovePlan: () => void
   onCompact: () => void
   onCreateNewSubChat?: () => void
   // State from parent
   isStreaming: boolean
-  hasUnapprovedPlan: boolean
   isCompacting: boolean
   // File uploads
   images: UploadedImage[]
@@ -122,6 +125,15 @@ export interface ChatInputAreaProps {
   // Text context from selected assistant message text
   textContexts: SelectedTextContext[]
   onRemoveTextContext: (id: string) => void
+  // Diff text context from selected diff sidebar text
+  diffTextContexts?: DiffTextContext[]
+  onRemoveDiffTextContext?: (id: string) => void
+  // Pasted text files (large pasted text saved as files)
+  pastedTexts?: PastedTextFile[]
+  onAddPastedText?: (text: string) => Promise<void>
+  onRemovePastedText?: (id: string) => void
+  // Callback to cache file content for dropped text files (content added to prompt on send)
+  onCacheFileContent?: (mentionId: string, content: string) => void
   // Pre-computed token data for context indicator (avoids passing messages array)
   messageTokenData: MessageTokenData
   // Context
@@ -140,6 +152,8 @@ export interface ChatInputAreaProps {
   firstQueueItemId?: string
   // Callback to notify parent when input has content (for custom text with questions)
   onInputContentChange?: (hasContent: boolean) => void
+  // Callback to send message with question answer (Enter sends immediately, not to queue)
+  onSubmitWithQuestionAnswer?: () => void
 }
 
 /**
@@ -150,7 +164,6 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
   // Compare primitives and stable references first (fast path)
   if (
     prevProps.isStreaming !== nextProps.isStreaming ||
-    prevProps.hasUnapprovedPlan !== nextProps.hasUnapprovedPlan ||
     prevProps.isCompacting !== nextProps.isCompacting ||
     prevProps.isUploading !== nextProps.isUploading ||
     prevProps.subChatId !== nextProps.subChatId ||
@@ -177,14 +190,17 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
     prevProps.onSend !== nextProps.onSend ||
     prevProps.onForceSend !== nextProps.onForceSend ||
     prevProps.onStop !== nextProps.onStop ||
-    prevProps.onApprovePlan !== nextProps.onApprovePlan ||
     prevProps.onCompact !== nextProps.onCompact ||
     prevProps.onCreateNewSubChat !== nextProps.onCreateNewSubChat ||
     prevProps.onAddAttachments !== nextProps.onAddAttachments ||
     prevProps.onRemoveImage !== nextProps.onRemoveImage ||
     prevProps.onRemoveFile !== nextProps.onRemoveFile ||
     prevProps.onRemoveTextContext !== nextProps.onRemoveTextContext ||
-    prevProps.onInputContentChange !== nextProps.onInputContentChange
+    prevProps.onAddPastedText !== nextProps.onAddPastedText ||
+    prevProps.onRemovePastedText !== nextProps.onRemovePastedText ||
+    prevProps.onCacheFileContent !== nextProps.onCacheFileContent ||
+    prevProps.onInputContentChange !== nextProps.onInputContentChange ||
+    prevProps.onSubmitWithQuestionAnswer !== nextProps.onSubmitWithQuestionAnswer
   ) {
     return false
   }
@@ -198,6 +214,18 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
   }
   for (let i = 0; i < prevProps.textContexts.length; i++) {
     if (prevProps.textContexts[i]?.id !== nextProps.textContexts[i]?.id) {
+      return false
+    }
+  }
+
+  // Compare diffTextContexts array - by length and ids
+  const prevDiff = prevProps.diffTextContexts || []
+  const nextDiff = nextProps.diffTextContexts || []
+  if (prevDiff.length !== nextDiff.length) {
+    return false
+  }
+  for (let i = 0; i < prevDiff.length; i++) {
+    if (prevDiff[i]?.id !== nextDiff[i]?.id) {
       return false
     }
   }
@@ -224,6 +252,18 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
   }
   for (let i = 0; i < prevProps.files.length; i++) {
     if (prevProps.files[i]?.id !== nextProps.files[i]?.id) {
+      return false
+    }
+  }
+
+  // Compare pastedTexts array - by length and ids
+  const prevPasted = prevProps.pastedTexts || []
+  const nextPasted = nextProps.pastedTexts || []
+  if (prevPasted.length !== nextPasted.length) {
+    return false
+  }
+  for (let i = 0; i < prevPasted.length; i++) {
+    if (prevPasted[i]?.id !== nextPasted[i]?.id) {
       return false
     }
   }
@@ -274,11 +314,9 @@ export const ChatInputArea = memo(function ChatInputArea({
   onSend,
   onForceSend,
   onStop,
-  onApprovePlan,
   onCompact,
   onCreateNewSubChat,
   isStreaming,
-  hasUnapprovedPlan,
   isCompacting,
   images,
   files,
@@ -288,6 +326,12 @@ export const ChatInputArea = memo(function ChatInputArea({
   isUploading,
   textContexts,
   onRemoveTextContext,
+  diffTextContexts,
+  onRemoveDiffTextContext,
+  pastedTexts = [],
+  onAddPastedText,
+  onRemovePastedText,
+  onCacheFileContent,
   messageTokenData,
   subChatId,
   parentChatId,
@@ -301,6 +345,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   onSendFromQueue,
   firstQueueItemId,
   onInputContentChange,
+  onSubmitWithQuestionAnswer,
 }: ChatInputAreaProps) {
   // Local state - changes here don't re-render parent
   const [hasContent, setHasContent] = useState(false)
@@ -336,6 +381,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   // Model dropdown state
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
   const [lastSelectedModelId, setLastSelectedModelId] = useAtom(lastSelectedModelIdAtom)
+  const [selectedOllamaModel, setSelectedOllamaModel] = useAtom(selectedOllamaModelAtom)
   const availableModels = useAvailableModels()
   const autoOfflineMode = useAtomValue(autoOfflineModeAtom)
   const showOfflineFeatures = useAtomValue(showOfflineModeFeaturesAtom)
@@ -347,29 +393,22 @@ export const ChatInputArea = memo(function ChatInputArea({
     normalizeCustomClaudeConfig(customClaudeConfig)
   const hasCustomClaudeConfig = Boolean(normalizedCustomClaudeConfig)
 
-  // Auto-switch model based on network status (only if offline features enabled)
-  useEffect(() => {
-    if (hasCustomClaudeConfig || !autoOfflineMode || !showOfflineFeatures) return
+  // Determine current Ollama model (selected or recommended)
+  const currentOllamaModel = selectedOllamaModel || availableModels.recommendedModel || availableModels.ollamaModels[0]
 
-    // Offline + Ollama available → switch to offline model
-    if (availableModels.isOffline && availableModels.hasOllama) {
-      const offlineModel = availableModels.models.find(m => m.id === "offline")
-      if (offlineModel && selectedModel?.id !== "offline") {
-        console.log('[UI] Auto-switching to offline model')
-        setSelectedModel(offlineModel)
-        setLastSelectedModelId("offline")
-      }
+  // Debug: log selected Ollama model
+  useEffect(() => {
+    if (availableModels.isOffline) {
+      console.log(`[Ollama UI] selectedOllamaModel atom value: ${selectedOllamaModel || "(null)"}, currentOllamaModel: ${currentOllamaModel}`)
     }
-    // Online + currently on offline model → switch back to last Claude model
-    else if (!availableModels.isOffline && selectedModel?.id === "offline") {
-      const claudeModel = availableModels.models.find(m => m.id === "sonnet") || availableModels.models[0]
-      if (claudeModel) {
-        console.log('[UI] Auto-switching back to Claude model')
-        setSelectedModel(claudeModel)
-        setLastSelectedModelId(claudeModel.id)
-      }
-    }
-  }, [availableModels.isOffline, availableModels.hasOllama, autoOfflineMode, hasCustomClaudeConfig, showOfflineFeatures, availableModels.models, selectedModel?.id, setLastSelectedModelId])
+  }, [selectedOllamaModel, currentOllamaModel, availableModels.isOffline])
+
+  // Extended thinking (reasoning) toggle
+  const [thinkingEnabled, setThinkingEnabled] = useAtom(extendedThinkingEnabledAtom)
+
+  // Auto-switch model based on network status (only if offline features enabled)
+  // Note: When offline, we show Ollama models selector instead of Claude models
+  // The selectedOllamaModel atom is used to track which Ollama model is selected
 
   // Plan mode - global atom
   const [isPlanMode, setIsPlanMode] = useAtom(isPlanModeAtom)
@@ -414,7 +453,8 @@ export const ChatInputArea = memo(function ChatInputArea({
       draft.trim() ||
       images.length > 0 ||
       files.length > 0 ||
-      textContexts.length > 0
+      textContexts.length > 0 ||
+      (diffTextContexts?.length ?? 0) > 0
 
     if (hasContent) {
       await saveSubChatDraftWithAttachments(chatId, subChatIdValue, draft, {
@@ -425,7 +465,7 @@ export const ChatInputArea = memo(function ChatInputArea({
     } else {
       clearSubChatDraft(chatId, subChatIdValue)
     }
-  }, [editorRef, images, files, textContexts])
+  }, [editorRef, images, files, textContexts, diffTextContexts])
 
   // Content change handler
   const handleContentChange = useCallback((newHasContent: boolean) => {
@@ -435,6 +475,22 @@ export const ChatInputArea = memo(function ChatInputArea({
     const draft = editorRef.current?.getValue() || ""
     currentDraftTextRef.current = draft
   }, [editorRef, onInputContentChange])
+
+  // Editor submit handler - handles Enter key with queue logic
+  // If input is empty and queue has items, stop stream and send first from queue
+  const handleEditorSubmit = useCallback(async () => {
+    const inputValue = editorRef.current?.getValue() || ""
+    const hasText = inputValue.trim().length > 0
+    const hasAttachments = images.length > 0 || files.length > 0 || textContexts.length > 0 || (diffTextContexts?.length ?? 0) > 0
+
+    if (!hasText && !hasAttachments && queueLength > 0 && onSendFromQueue && firstQueueItemId) {
+      // Input empty, queue has items - stop stream and send from queue
+      await onStop()
+      onSendFromQueue(firstQueueItemId)
+    } else {
+      onSend()
+    }
+  }, [editorRef, images, files, textContexts, diffTextContexts, queueLength, onSendFromQueue, firstQueueItemId, onStop, onSend])
 
   // Mention select handler
   const handleMentionSelect = useCallback((mention: FileMentionOption) => {
@@ -488,7 +544,7 @@ export const ChatInputArea = memo(function ChatInputArea({
       editorRef.current?.clearSlashCommand()
       setShowSlashDropdown(false)
 
-      // Handle builtin commands
+      // Handle builtin commands that change app state (no text input needed)
       if (command.category === "builtin") {
         switch (command.name) {
           case "clear":
@@ -496,53 +552,35 @@ export const ChatInputArea = memo(function ChatInputArea({
             if (onCreateNewSubChat) {
               onCreateNewSubChat()
             }
-            break
+            return
           case "plan":
             if (!isPlanMode) {
               setIsPlanMode(true)
             }
-            break
+            return
           case "agent":
             if (isPlanMode) {
               setIsPlanMode(false)
             }
-            break
+            return
           case "compact":
             // Trigger context compaction
             onCompact()
-            break
-          // Prompt-based commands - auto-send to agent
-          case "review":
-          case "pr-comments":
-          case "release-notes":
-          case "security-review":
-          case "commit": {
-            const prompt =
-              COMMAND_PROMPTS[command.name as keyof typeof COMMAND_PROMPTS]
-            if (prompt) {
-              editorRef.current?.setValue(prompt)
-              // Auto-send the prompt to agent
-              setTimeout(() => onSend(), 0)
-            }
-            break
-          }
+            return
         }
-        return
       }
 
-      // Handle repository commands - auto-send to agent
-      if (command.prompt) {
-        editorRef.current?.setValue(command.prompt)
-        setTimeout(() => onSend(), 0)
-      }
+      // For all other commands (builtin prompts and custom):
+      // insert the command and let user add arguments or press Enter to send
+      editorRef.current?.setValue(`/${command.name} `)
     },
-    [isPlanMode, setIsPlanMode, onSend, onCreateNewSubChat, onCompact, editorRef],
+    [isPlanMode, setIsPlanMode, onCreateNewSubChat, onCompact, editorRef],
   )
 
-  // Paste handler for images and plain text
+  // Paste handler for images, plain text, and large text (saved as files)
   const handlePaste = useCallback(
-    (e: React.ClipboardEvent) => handlePasteEvent(e, onAddAttachments),
-    [onAddAttachments],
+    (e: React.ClipboardEvent) => handlePasteEvent(e, onAddAttachments, onAddPastedText),
+    [onAddAttachments, onAddPastedText],
   )
 
   // Drag/drop handlers
@@ -556,12 +594,124 @@ export const ChatInputArea = memo(function ChatInputArea({
     setIsDragOver(false)
   }, [])
 
+  // Text file extensions that should have content read and attached
+  const TEXT_FILE_EXTENSIONS = new Set([
+    // Code
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".py", ".rb", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".h", ".hpp",
+    ".cs", ".php", ".lua", ".r", ".m", ".mm", ".scala", ".clj", ".ex", ".exs",
+    ".hs", ".elm", ".erl", ".fs", ".fsx", ".ml", ".v", ".vhdl", ".zig",
+    // Config/Data
+    ".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".env", ".conf", ".cfg",
+    ".properties", ".plist",
+    // Web
+    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".astro",
+    // Documentation
+    ".md", ".mdx", ".rst", ".txt", ".text",
+    // Graphics (text-based)
+    ".svg",
+    // Shell/Scripts
+    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd",
+    // Other
+    ".sql", ".graphql", ".gql", ".prisma", ".dockerfile", ".makefile",
+    ".gitignore", ".gitattributes", ".editorconfig", ".eslintrc", ".prettierrc",
+  ])
+
+  const MAX_FILE_SIZE_FOR_CONTENT = 100 * 1024 // 100KB - files larger than this only get path mention
+
+  // Image extensions that should be handled as attachments (base64)
+  const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"])
+
+  const trpcUtils = trpc.useUtils()
+
   const handleDrop = useCallback(
-    (e: React.DragEvent) => {
+    async (e: React.DragEvent) => {
       e.preventDefault()
       setIsDragOver(false)
       const droppedFiles = Array.from(e.dataTransfer.files)
-      onAddAttachments(droppedFiles)
+
+      // Separate images from other files
+      const imageFiles: File[] = []
+      const otherFiles: File[] = []
+
+      for (const file of droppedFiles) {
+        const ext = file.name.includes(".") ? "." + file.name.split(".").pop()?.toLowerCase() : ""
+        if (IMAGE_EXTENSIONS.has(ext)) {
+          imageFiles.push(file)
+        } else {
+          otherFiles.push(file)
+        }
+      }
+
+      // Handle images via existing attachment system (base64)
+      if (imageFiles.length > 0) {
+        onAddAttachments(imageFiles)
+      }
+
+      // Process other files - for text files, read content and add as file mention
+      for (const file of otherFiles) {
+        // Get file path using Electron's webUtils API (more reliable than file.path)
+        // @ts-expect-error - Electron's webUtils API
+        const filePath: string | undefined = window.webUtils?.getPathForFile?.(file) || (file as File & { path?: string }).path
+
+        let mentionId: string
+        let mentionPath: string
+
+        if (projectPath && filePath && filePath.startsWith(projectPath)) {
+          // File is inside project - use relative path
+          const relativePath = filePath.slice(projectPath.length).replace(/^\//, "")
+          mentionId = `file:local:${relativePath}`
+          mentionPath = relativePath
+        } else if (filePath) {
+          // External file - use absolute path
+          mentionId = `file:external:${filePath}`
+          mentionPath = filePath
+        } else {
+          // No path available (shouldn't happen in Electron) - use filename
+          mentionId = `file:external:${file.name}`
+          mentionPath = file.name
+        }
+
+        const fileName = file.name
+        const ext = fileName.includes(".") ? "." + fileName.split(".").pop()?.toLowerCase() : ""
+        // Files without extension are likely directories or special files - skip content reading
+        const hasExtension = ext !== ""
+        const isTextFile = hasExtension && TEXT_FILE_EXTENSIONS.has(ext)
+        const isSmallEnough = file.size <= MAX_FILE_SIZE_FOR_CONTENT
+
+        // For text files that are small enough, read content and cache it
+        // Show file chip, content will be added to prompt on send
+        if (isTextFile && isSmallEnough && filePath) {
+          // Add file chip for visual representation
+          editorRef.current?.insertMention({
+            id: mentionId,
+            label: fileName,
+            path: mentionPath,
+            repository: "local",
+            type: "file",
+          })
+
+          // Read and cache content (will be added to prompt on send)
+          try {
+            const content = await trpcUtils.files.readFile.fetch({ filePath })
+            onCacheFileContent?.(mentionId, content)
+          } catch (err) {
+            // If reading fails, chip is still there - agent can try to read via path
+            console.error(`[handleDrop] Failed to read file content ${filePath}:`, err)
+          }
+        } else {
+          // For binary files, large files - add as mention only
+          // mentionPath contains full absolute path for external files
+          editorRef.current?.insertMention({
+            id: mentionId,
+            label: fileName,
+            path: mentionPath,
+            repository: "local",
+            type: "file",
+          })
+        }
+      }
+
       // Focus after state update - use double rAF to wait for React render
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -569,7 +719,7 @@ export const ChatInputArea = memo(function ChatInputArea({
         })
       })
     },
-    [onAddAttachments, editorRef],
+    [editorRef, projectPath, onCacheFileContent, onAddAttachments, trpcUtils],
   )
 
   return (
@@ -594,7 +744,7 @@ export const ChatInputArea = memo(function ChatInputArea({
               maxHeight={200}
               onSubmit={onSend}
               contextItems={
-                images.length > 0 || files.length > 0 || textContexts.length > 0 ? (
+                images.length > 0 || files.length > 0 || textContexts.length > 0 || (diffTextContexts?.length ?? 0) > 0 || pastedTexts.length > 0 ? (
                   <div className="flex flex-wrap gap-[6px]">
                     {(() => {
                       // Build allImages array for gallery navigation
@@ -638,6 +788,27 @@ export const ChatInputArea = memo(function ChatInputArea({
                         onRemove={() => onRemoveTextContext(tc.id)}
                       />
                     ))}
+                    {diffTextContexts?.map((dtc) => (
+                      <AgentDiffTextContextItem
+                        key={dtc.id}
+                        text={dtc.text}
+                        preview={dtc.preview}
+                        filePath={dtc.filePath}
+                        lineNumber={dtc.lineNumber}
+                        lineType={dtc.lineType}
+                        onRemove={onRemoveDiffTextContext ? () => onRemoveDiffTextContext(dtc.id) : undefined}
+                      />
+                    ))}
+                    {pastedTexts.map((pt) => (
+                      <AgentPastedTextItem
+                        key={pt.id}
+                        filePath={pt.filePath}
+                        filename={pt.filename}
+                        size={pt.size}
+                        preview={pt.preview}
+                        onRemove={onRemovePastedText ? () => onRemovePastedText(pt.id) : undefined}
+                      />
+                    ))}
                   </div>
                 ) : null
               }
@@ -665,10 +836,10 @@ export const ChatInputArea = memo(function ChatInputArea({
                   onSlashTrigger={handleSlashTrigger}
                   onCloseSlashTrigger={handleCloseSlashTrigger}
                   onContentChange={handleContentChange}
-                  onSubmit={onSend}
+                  onSubmit={onSubmitWithQuestionAnswer || handleEditorSubmit}
                   onForceSubmit={onForceSend}
                   onShiftTab={() => setIsPlanMode((prev) => !prev)}
-                  placeholder="Plan, @ for context, / for commands"
+                  placeholder={isStreaming ? "Add to the queue" : "Plan, @ for context, / for commands"}
                   className={cn(
                     "bg-transparent max-h-[200px] overflow-y-auto p-1",
                     isMobile && "min-h-[56px]",
@@ -848,84 +1019,129 @@ export const ChatInputArea = memo(function ChatInputArea({
                       )}
                   </DropdownMenu>
 
-                  {/* Model selector */}
-                  <DropdownMenu
-                    open={hasCustomClaudeConfig ? false : isModelDropdownOpen}
-                    onOpenChange={(open) => {
-                      if (!hasCustomClaudeConfig) {
-                        setIsModelDropdownOpen(open)
-                      }
-                    }}
-                  >
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        disabled={hasCustomClaudeConfig}
-                        className={cn(
-                          "flex items-center gap-1.5 px-2 py-1 text-sm text-muted-foreground transition-colors rounded-md outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
-                          hasCustomClaudeConfig
-                            ? "opacity-70 cursor-not-allowed"
-                            : "hover:text-foreground hover:bg-muted/50",
-                        )}
-                      >
-                        <ClaudeCodeIcon className="h-3.5 w-3.5 shrink-0" />
-                        <span className="truncate">
-                          {hasCustomClaudeConfig ? (
-                            "Custom Model"
-                          ) : (
-                            <>
-                              {selectedModel?.name}{" "}
-                              <span className="text-muted-foreground">4.5</span>
-                            </>
+                  {/* Model selector - shows Ollama models when offline, Claude models when online */}
+                  {availableModels.isOffline && availableModels.hasOllama ? (
+                    // Offline mode: show Ollama model selector
+                    <DropdownMenu
+                      open={isModelDropdownOpen}
+                      onOpenChange={setIsModelDropdownOpen}
+                    >
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          className="flex items-center gap-1.5 px-2 py-1 text-sm text-muted-foreground hover:text-foreground transition-colors rounded-md hover:bg-muted/50 outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70 border border-border"
+                        >
+                          <Zap className="h-4 w-4 shrink-0" />
+                          <span className="truncate">{currentOllamaModel || "Select model"}</span>
+                          <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="w-[240px]">
+                        {availableModels.ollamaModels.map((model) => {
+                          const isSelected = model === currentOllamaModel
+                          const isRecommended = model === availableModels.recommendedModel
+                          return (
+                            <DropdownMenuItem
+                              key={model}
+                              onClick={() => {
+                                console.log(`[Ollama UI] Setting selected model: ${model}`)
+                                setSelectedOllamaModel(model)
+                              }}
+                              className="gap-2 justify-between"
+                            >
+                              <div className="flex items-center gap-1.5">
+                                <Zap className="h-4 w-4 text-muted-foreground shrink-0" />
+                                <span>
+                                  {model}
+                                  {isRecommended && (
+                                    <span className="text-muted-foreground ml-1">(recommended)</span>
+                                  )}
+                                </span>
+                              </div>
+                              {isSelected && (
+                                <CheckIcon className="h-3.5 w-3.5 shrink-0" />
+                              )}
+                            </DropdownMenuItem>
+                          )
+                        })}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : (
+                    // Online mode: show Claude model selector
+                    <DropdownMenu
+                      open={hasCustomClaudeConfig ? false : isModelDropdownOpen}
+                      onOpenChange={(open) => {
+                        if (!hasCustomClaudeConfig) {
+                          setIsModelDropdownOpen(open)
+                        }
+                      }}
+                    >
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          disabled={hasCustomClaudeConfig}
+                          className={cn(
+                            "flex items-center gap-1.5 px-2 py-1 text-sm text-muted-foreground transition-colors rounded-md outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
+                            hasCustomClaudeConfig
+                              ? "opacity-70 cursor-not-allowed"
+                              : "hover:text-foreground hover:bg-muted/50",
                           )}
-                        </span>
-                        <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start" className="w-[200px]">
-                      {availableModels.models.map((model) => {
-                        const isSelected = selectedModel?.id === model.id
-                        const isOfflineModel = model.id === "offline"
-                        // Disable non-offline models when offline
-                        const isDisabled = availableModels.isOffline && !isOfflineModel
-                        return (
-                          <DropdownMenuItem
-                            key={model.id}
-                            onClick={() => {
-                              if (!isDisabled) {
+                        >
+                          <ClaudeCodeIcon className="h-3.5 w-3.5 shrink-0" />
+                          <span className="truncate">
+                            {hasCustomClaudeConfig ? (
+                              "Custom Model"
+                            ) : (
+                              <>
+                                {selectedModel?.name}{" "}
+                                <span className="text-muted-foreground">4.5</span>
+                              </>
+                            )}
+                          </span>
+                          <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="w-[200px]">
+                        {availableModels.models.map((model) => {
+                          const isSelected = selectedModel?.id === model.id
+                          return (
+                            <DropdownMenuItem
+                              key={model.id}
+                              onClick={() => {
                                 setSelectedModel(model)
                                 setLastSelectedModelId(model.id)
-                              }
-                            }}
-                            className="gap-2 justify-between"
-                            disabled={isDisabled}
-                          >
-                            <div className="flex items-center gap-1.5">
-                              {isOfflineModel ? (
-                                <WifiOff className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                              ) : (
+                              }}
+                              className="gap-2 justify-between"
+                            >
+                              <div className="flex items-center gap-1.5">
                                 <ClaudeCodeIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                <span>
+                                  {model.name}{" "}
+                                  <span className="text-muted-foreground">4.5</span>
+                                </span>
+                              </div>
+                              {isSelected && (
+                                <CheckIcon className="h-3.5 w-3.5 shrink-0" />
                               )}
-                              <span>
-                                {isOfflineModel ? (
-                                  model.name
-                                ) : (
-                                  <>
-                                    {model.name}{" "}
-                                    <span className="text-muted-foreground">
-                                      4.5
-                                    </span>
-                                  </>
-                                )}
-                              </span>
-                            </div>
-                            {isSelected && (
-                              <CheckIcon className="h-3.5 w-3.5 shrink-0" />
-                            )}
-                          </DropdownMenuItem>
-                        )
-                      })}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                            </DropdownMenuItem>
+                          )
+                        })}
+                        <DropdownMenuSeparator />
+                        <div
+                          className="flex items-center justify-between px-1.5 py-1.5 mx-1"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <ThinkingIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                            <span className="text-sm">Thinking</span>
+                          </div>
+                          <Switch
+                            checked={thinkingEnabled}
+                            onCheckedChange={setThinkingEnabled}
+                            className="scale-75"
+                          />
+                        </div>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-0.5 ml-auto flex-shrink-0">
@@ -957,59 +1173,37 @@ export const ChatInputArea = memo(function ChatInputArea({
                     size="icon"
                     className="h-7 w-7 rounded-sm outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70"
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={
-                      isStreaming ||
-                      (images.length >= 5 && files.length >= 10)
-                    }
+                    disabled={images.length >= 5 && files.length >= 10}
                   >
                     <AttachIcon className="h-4 w-4" />
                   </Button>
 
-                  {/* Send/Stop button or Build Plan button */}
+                  {/* Send/Stop button */}
                   <div className="ml-1">
-                    {/* Show "Build plan" button when plan is ready, input is empty, and in plan mode */}
-                    {isPlanMode &&
-                    hasUnapprovedPlan &&
-                    !hasContent &&
-                    images.length === 0 &&
-                    files.length === 0 &&
-                    textContexts.length === 0 &&
-                    !isStreaming ? (
-                      <Button
-                        onClick={onApprovePlan}
-                        size="sm"
-                        className="h-7 gap-1.5 rounded-lg"
-                      >
-                        Build plan
-                        <Kbd className="text-primary-foreground/70">
-                          ⌘↵
-                        </Kbd>
-                      </Button>
-                    ) : (
-                      <AgentSendButton
-                        isStreaming={isStreaming}
-                        isSubmitting={false}
-                        disabled={
-                          (!hasContent &&
-                            images.length === 0 &&
-                            files.length === 0 &&
-                            textContexts.length === 0 &&
-                            queueLength === 0) ||
-                          isUploading
+                    <AgentSendButton
+                      isStreaming={isStreaming}
+                      isSubmitting={false}
+                      disabled={
+                        (!hasContent &&
+                          images.length === 0 &&
+                          files.length === 0 &&
+                          textContexts.length === 0 &&
+                          (diffTextContexts?.length ?? 0) === 0 &&
+                          queueLength === 0) ||
+                        isUploading
+                      }
+                      hasContent={hasContent || images.length > 0 || files.length > 0 || textContexts.length > 0 || (diffTextContexts?.length ?? 0) > 0}
+                      onClick={() => {
+                        // If input is empty and queue has items, send first queue item
+                        if (!hasContent && images.length === 0 && files.length === 0 && queueLength > 0 && onSendFromQueue && firstQueueItemId) {
+                          onSendFromQueue(firstQueueItemId)
+                        } else {
+                          onSend()
                         }
-                        hasContent={hasContent || images.length > 0 || files.length > 0 || textContexts.length > 0}
-                        onClick={() => {
-                          // If input is empty and queue has items, send first queue item
-                          if (!hasContent && images.length === 0 && files.length === 0 && queueLength > 0 && onSendFromQueue && firstQueueItemId) {
-                            onSendFromQueue(firstQueueItemId)
-                          } else {
-                            onSend()
-                          }
-                        }}
-                        onStop={onStop}
-                        isPlanMode={isPlanMode}
-                      />
-                    )}
+                      }}
+                      onStop={onStop}
+                      isPlanMode={isPlanMode}
+                    />
                   </div>
                 </div>
               </PromptInputActions>
@@ -1055,8 +1249,7 @@ export const ChatInputArea = memo(function ChatInputArea({
         onSelect={handleSlashSelect}
         searchText={slashSearchText}
         position={slashPosition}
-        teamId={teamId}
-        repository={repository}
+        projectPath={projectPath}
         isPlanMode={isPlanMode}
       />
     </div>

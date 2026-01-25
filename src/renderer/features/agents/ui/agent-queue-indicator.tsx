@@ -10,8 +10,11 @@ import {
 } from "../../../components/ui/tooltip"
 import { cn } from "../../../lib/utils"
 import type { AgentQueueItem } from "../lib/queue-utils"
+import { RenderFileMentions } from "../mentions/render-file-mentions"
+import { getWindowId } from "../../../contexts/WindowContext"
 
-const QUEUE_EXPANDED_KEY = "agent-queue-expanded"
+// Window-scoped key so each window has its own queue expanded state
+const getQueueExpandedKey = () => `${getWindowId()}:agent-queue-expanded`
 
 // Queue item row component
 const QueueItemRow = memo(function QueueItemRow({
@@ -42,13 +45,20 @@ const QueueItemRow = memo(function QueueItemRow({
   // Get display text - truncate message and show attachment count
   const hasAttachments =
     (item.images && item.images.length > 0) ||
-    (item.files && item.files.length > 0)
+    (item.files && item.files.length > 0) ||
+    (item.textContexts && item.textContexts.length > 0) ||
+    (item.diffTextContexts && item.diffTextContexts.length > 0)
   const attachmentCount =
-    (item.images?.length || 0) + (item.files?.length || 0)
+    (item.images?.length || 0) +
+    (item.files?.length || 0) +
+    (item.textContexts?.length || 0) +
+    (item.diffTextContexts?.length || 0)
 
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/50 transition-colors cursor-default">
-      <span className="truncate flex-1 text-foreground">{item.message}</span>
+      <span className="truncate flex-1 text-foreground">
+          <RenderFileMentions text={item.message} />
+        </span>
       {hasAttachments && (
         <span className="flex-shrink-0 text-muted-foreground text-[10px]">
           +{attachmentCount} {attachmentCount === 1 ? "file" : "files"}
@@ -102,16 +112,16 @@ export const AgentQueueIndicator = memo(function AgentQueueIndicator({
   isStreaming = false,
   hasStatusCardBelow = false,
 }: AgentQueueIndicatorProps) {
-  // Load expanded state from localStorage
+  // Load expanded state from localStorage (window-scoped)
   const [isExpanded, setIsExpanded] = useState(() => {
     if (typeof window === "undefined") return true
-    const saved = localStorage.getItem(QUEUE_EXPANDED_KEY)
+    const saved = localStorage.getItem(getQueueExpandedKey())
     return saved !== null ? saved === "true" : true // Default to expanded
   })
 
-  // Save expanded state to localStorage
+  // Save expanded state to localStorage (window-scoped)
   useEffect(() => {
-    localStorage.setItem(QUEUE_EXPANDED_KEY, String(isExpanded))
+    localStorage.setItem(getQueueExpandedKey(), String(isExpanded))
   }, [isExpanded])
 
   if (queue.length === 0) {

@@ -8,23 +8,23 @@ import {
   agentsSidebarWidthAtom,
   agentsSettingsDialogOpenAtom,
   agentsSettingsDialogActiveTabAtom,
-  agentsShortcutsDialogOpenAtom,
   isDesktopAtom,
   isFullscreenAtom,
   anthropicOnboardingCompletedAtom,
+  customHotkeysAtom,
 } from "../../lib/atoms"
 import { selectedAgentChatIdAtom, selectedProjectAtom } from "../agents/atoms"
 import { trpc } from "../../lib/trpc"
 import { useAgentsHotkeys } from "../agents/lib/agents-hotkeys-manager"
 import { toggleSearchAtom } from "../agents/search"
 import { AgentsSettingsDialog } from "../../components/dialogs/agents-settings-dialog"
-import { AgentsShortcutsDialog } from "../../components/dialogs/agents-shortcuts-dialog"
 import { ClaudeLoginModal } from "../../components/dialogs/claude-login-modal"
 import { TooltipProvider } from "../../components/ui/tooltip"
 import { ResizableSidebar } from "../../components/ui/resizable-sidebar"
 import { AgentsSidebar } from "../sidebar/agents-sidebar"
 import { AgentsContent } from "../agents/ui/agents-content"
 import { UpdateBanner } from "../../components/update-banner"
+import { WindowsTitleBar } from "../../components/windows-title-bar"
 import { useUpdateChecker } from "../../lib/hooks/use-update-checker"
 import { useAgentSubChatStore } from "../../lib/stores/sub-chat-store"
 import { QueueProcessor } from "../agents/components/queue-processor"
@@ -88,9 +88,6 @@ export function AgentsLayout() {
   const [sidebarWidth, setSidebarWidth] = useAtom(agentsSidebarWidthAtom)
   const [settingsOpen, setSettingsOpen] = useAtom(agentsSettingsDialogOpenAtom)
   const setSettingsActiveTab = useSetAtom(agentsSettingsDialogActiveTabAtom)
-  const [shortcutsOpen, setShortcutsOpen] = useAtom(
-    agentsShortcutsDialogOpenAtom,
-  )
   const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
   const [selectedProject, setSelectedProject] = useAtom(selectedProjectAtom)
   const setAnthropicOnboardingCompleted = useSetAtom(
@@ -213,15 +210,18 @@ export function AgentsLayout() {
   // Chat search toggle
   const toggleChatSearch = useSetAtom(toggleSearchAtom)
 
+  // Custom hotkeys config
+  const customHotkeysConfig = useAtomValue(customHotkeysAtom)
+
   // Initialize hotkeys manager
   useAgentsHotkeys({
     setSelectedChatId,
     setSidebarOpen,
     setSettingsDialogOpen: setSettingsOpen,
     setSettingsActiveTab,
-    setShortcutsDialogOpen: setShortcutsOpen,
     toggleChatSearch,
     selectedChatId,
+    customHotkeysConfig,
   })
 
   const handleCloseSidebar = useCallback(() => {
@@ -236,14 +236,13 @@ export function AgentsLayout() {
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
-      <AgentsShortcutsDialog
-        isOpen={shortcutsOpen}
-        onClose={() => setShortcutsOpen(false)}
-      />
       <ClaudeLoginModal />
-      <div className="flex w-full h-full relative overflow-hidden bg-background select-none">
-        {/* Left Sidebar (Agents) */}
-        <ResizableSidebar
+      <div className="flex flex-col w-full h-full relative overflow-hidden bg-background select-none">
+        {/* Windows Title Bar (only shown on Windows with frameless window) */}
+        <WindowsTitleBar />
+        <div className="flex flex-1 overflow-hidden">
+          {/* Left Sidebar (Agents) */}
+          <ResizableSidebar
           isOpen={!isMobile && sidebarOpen}
           onClose={handleCloseSidebar}
           widthAtom={agentsSidebarWidthAtom}
@@ -265,9 +264,10 @@ export function AgentsLayout() {
           />
         </ResizableSidebar>
 
-        {/* Main Content */}
-        <div className="flex-1 overflow-hidden flex flex-col min-w-0">
-          <AgentsContent />
+          {/* Main Content */}
+          <div className="flex-1 overflow-hidden flex flex-col min-w-0">
+            <AgentsContent />
+          </div>
         </div>
 
         {/* Update Banner */}

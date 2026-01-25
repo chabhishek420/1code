@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, stat } from "node:fs/promises";
+import { devNull, homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import simpleGit from "simple-git";
@@ -11,6 +12,7 @@ import {
 } from "unique-names-generator";
 import { checkGitLfsAvailable, getShellEnvironment } from "./shell-env";
 import { executeWorktreeSetup } from "./worktree-config";
+import { generateWorktreeFolderName } from "./worktree-naming";
 
 const execFileAsync = promisify(execFile);
 
@@ -149,6 +151,21 @@ export async function createWorktree(
 			}
 		}
 
+		// Resolve startPoint to commit hash to avoid Windows escaping issues with ^{commit}
+		const git = simpleGit(mainRepoPath);
+		let commitHash: string;
+		try {
+			commitHash = (await git.revparse([`${startPoint}^{commit}`])).trim();
+		} catch {
+			// Fallback to local branch if origin/branch doesn't exist
+			const localBranch = startPoint.replace(/^origin\//, "");
+			try {
+				commitHash = (await git.revparse([`${localBranch}^{commit}`])).trim();
+			} catch {
+				commitHash = (await git.revparse([startPoint])).trim();
+			}
+		}
+
 		await execFileAsync(
 			"git",
 			[
@@ -159,10 +176,7 @@ export async function createWorktree(
 				worktreePath,
 				"-b",
 				branch,
-				// Append ^{commit} to force Git to treat the startPoint as a commit,
-				// not a branch ref. This prevents implicit upstream tracking when
-				// creating a new branch from a remote branch like origin/main.
-				`${startPoint}^{commit}`,
+				commitHash,
 			],
 			{ env, timeout: 120_000 },
 		);
@@ -884,15 +898,16 @@ export interface WorktreeResult {
 /**
  * Create a git worktree for a chat (wrapper for chats.ts)
  * @param projectPath - Path to the main repository
- * @param projectId - Project ID for worktree directory
- * @param chatId - Chat ID for worktree directory
+ * @param projectSlug - Sanitized project name for worktree directory
+ * @param chatId - Chat ID (used for logging)
  * @param selectedBaseBranch - Optional branch to base the worktree off (defaults to auto-detected default branch)
  */
 export async function createWorktreeForChat(
 	projectPath: string,
-	projectId: string,
+	projectSlug: string,
 	chatId: string,
 	selectedBaseBranch?: string,
+	branchType?: "local" | "remote",
 ): Promise<WorktreeResult> {
 	try {
 		const git = simpleGit(projectPath);
@@ -906,21 +921,31 @@ export async function createWorktreeForChat(
 		const baseBranch = selectedBaseBranch || await getDefaultBranch(projectPath);
 
 		const branch = generateBranchName();
-		const worktreesDir = join(process.env.HOME || "", ".21st", "worktrees");
-		const worktreePath = join(worktreesDir, projectId, chatId);
+		const worktreesDir = join(homedir(), ".21st", "worktrees");
+		const projectWorktreeDir = join(worktreesDir, projectSlug);
+		const folderName = generateWorktreeFolderName(projectWorktreeDir);
+		const worktreePath = join(projectWorktreeDir, folderName);
 
-		await createWorktree(projectPath, branch, worktreePath, `origin/${baseBranch}`);
+		// Determine startPoint based on branch type
+		// For local branches, use the local ref directly
+		// For remote branches or when type is not specified, use origin/{branch}
+		const startPoint = branchType === "local" ? baseBranch : `origin/${baseBranch}`;
 
-		// Run worktree setup commands (install deps, copy envs, etc.)
-		// Don't fail worktree creation if setup fails, just log
-		try {
-			const setupResult = await executeWorktreeSetup(worktreePath, projectPath);
-			if (!setupResult.success) {
-				console.warn(`[worktree] Setup completed with errors: ${setupResult.errors.join(", ")}`);
-			}
-		} catch (setupError) {
-			console.warn(`[worktree] Setup failed: ${setupError}`);
-		}
+		await createWorktree(projectPath, branch, worktreePath, startPoint);
+
+		// Run worktree setup commands in BACKGROUND (don't block chat creation)
+		// This allows the user to start chatting immediately while deps install
+		executeWorktreeSetup(worktreePath, projectPath)
+			.then((setupResult) => {
+				if (!setupResult.success) {
+					console.warn(`[worktree] Setup completed with errors: ${setupResult.errors.join(", ")}`);
+				} else {
+					console.log(`[worktree] Setup completed successfully for ${chatId}`);
+				}
+			})
+			.catch((setupError) => {
+				console.warn(`[worktree] Setup failed: ${setupError}`);
+			});
 
 		return { success: true, worktreePath, branch, baseBranch };
 	} catch (error) {
@@ -972,15 +997,36 @@ export async function getWorktreeDiff(
 				return true;
 			});
 
-			const untrackedDiff =
-				untrackedFiles.length > 0
-					? await git.diff([
+			// git diff --no-index only accepts 2 paths, so we need to diff each file separately
+			// Also, git diff --no-index returns exit code 1 when files differ, which simple-git treats as error
+			// So we use raw() to get the output regardless of exit code
+			const untrackedDiffs: string[] = [];
+			for (const file of untrackedFiles) {
+				try {
+					const fileDiff = await git.raw([
+						"diff",
 						"--no-color",
 						"--no-index",
-						"/dev/null",
-						...untrackedFiles,
-					])
-					: "";
+						devNull,
+						file,
+					]);
+					if (fileDiff) {
+						untrackedDiffs.push(fileDiff);
+					}
+				} catch (error: unknown) {
+					// git diff --no-index returns exit code 1 when files differ
+					// simple-git throws but includes the diff output in the error
+					const gitError = error as { message?: string };
+					if (gitError.message && gitError.message.includes("diff --git")) {
+						// Extract the diff from the error message
+						const diffStart = gitError.message.indexOf("diff --git");
+						if (diffStart !== -1) {
+							untrackedDiffs.push(gitError.message.substring(diffStart));
+						}
+					}
+				}
+			}
+			const untrackedDiff = untrackedDiffs.join("\n");
 
 			const combinedDiff = [workingDiff, untrackedDiff]
 				.filter(Boolean)

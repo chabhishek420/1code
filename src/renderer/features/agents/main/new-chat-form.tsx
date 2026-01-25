@@ -2,7 +2,7 @@
 
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
-import { AlignJustify, Plus, WifiOff } from "lucide-react"
+import { AlignJustify, Plus, Zap } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { Button } from "../../../components/ui/button"
@@ -50,7 +50,10 @@ const selectedTeamIdAtom = atom<string | null>(null)
 import {
   agentsSettingsDialogOpenAtom,
   agentsSettingsDialogActiveTabAtom,
+  customClaudeConfigAtom,
+  normalizeCustomClaudeConfig,
   showOfflineModeFeaturesAtom,
+  selectedOllamaModelAtom,
 } from "../../../lib/atoms"
 // Desktop uses real tRPC
 import { toast } from "sonner"
@@ -58,18 +61,22 @@ import { trpc } from "../../../lib/trpc"
 import {
   AgentsSlashCommand,
   COMMAND_PROMPTS,
+  BUILTIN_SLASH_COMMANDS,
   type SlashCommandOption,
 } from "../commands"
 import { useAgentsFileUpload } from "../hooks/use-agents-file-upload"
+import { usePastedTextFiles } from "../hooks/use-pasted-text-files"
 import { useFocusInputOnEnter } from "../hooks/use-focus-input-on-enter"
 import { useToggleFocusOnCmdEsc } from "../hooks/use-toggle-focus-on-cmd-esc"
 import {
   AgentsFileMention,
   AgentsMentionsEditor,
+  MENTION_PREFIXES,
   type AgentsMentionsEditorHandle,
   type FileMentionOption,
 } from "../mentions"
 import { AgentImageItem } from "../ui/agent-image-item"
+import { AgentPastedTextItem } from "../ui/agent-pasted-text-item"
 import { AgentsHeaderControls } from "../ui/agents-header-controls"
 // import { CreateBranchDialog } from "@/app/(alpha)/agents/{components}/create-branch-dialog"
 import {
@@ -90,6 +97,7 @@ import {
   markDraftVisible,
   type DraftProject,
 } from "../lib/drafts"
+import { CLAUDE_MODELS } from "../lib/models"
 // import type { PlanType } from "@/lib/config/subscription-plans"
 type PlanType = string
 
@@ -100,35 +108,30 @@ const CodexIcon = (props: React.SVGProps<SVGSVGElement>) => (
   </svg>
 )
 
-// Hook to get available models (including offline model if Ollama is available and debug enabled)
+// Hook to get available models (including offline models if Ollama is available and debug enabled)
 function useAvailableModels() {
-  const { data: ollamaStatus } = trpc.ollama.getStatus.useQuery(undefined, {
-    refetchInterval: 30000,
-  })
   const showOfflineFeatures = useAtomValue(showOfflineModeFeaturesAtom)
+  const { data: ollamaStatus } = trpc.ollama.getStatus.useQuery(undefined, {
+    refetchInterval: showOfflineFeatures ? 30000 : false,
+    enabled: showOfflineFeatures, // Only query Ollama when offline mode is enabled
+  })
 
-  const baseModels = [
-    { id: "opus", name: "Opus" },
-    { id: "sonnet", name: "Sonnet" },
-    { id: "haiku", name: "Haiku" },
-  ]
+  const baseModels = CLAUDE_MODELS
 
   const isOffline = ollamaStatus ? !ollamaStatus.internet.online : false
-  const hasOllama = ollamaStatus?.ollama.available && !!ollamaStatus.ollama.recommendedModel
+  const hasOllama = ollamaStatus?.ollama.available && (ollamaStatus.ollama.models?.length ?? 0) > 0
+  const ollamaModels = ollamaStatus?.ollama.models || []
+  const recommendedModel = ollamaStatus?.ollama.recommendedModel
 
-  // Only show offline model if:
+  // Only show offline models if:
   // 1. Debug flag is enabled (showOfflineFeatures)
-  // 2. Ollama is available
+  // 2. Ollama is available with models
   // 3. User is actually offline
   if (showOfflineFeatures && hasOllama && isOffline) {
     return {
-      models: [
-        ...baseModels,
-        {
-          id: "offline",
-          name: ollamaStatus.ollama.recommendedModel,
-        },
-      ],
+      models: baseModels,
+      ollamaModels,
+      recommendedModel,
       isOffline,
       hasOllama: true,
     }
@@ -136,6 +139,8 @@ function useAvailableModels() {
 
   return {
     models: baseModels,
+    ollamaModels: [] as string[],
+    recommendedModel: undefined as string | undefined,
     isOffline,
     hasOllama: false,
   }
@@ -204,6 +209,10 @@ export function NewChatForm({
   const [isPlanMode, setIsPlanMode] = useAtom(isPlanModeAtom)
   const [workMode, setWorkMode] = useAtom(lastSelectedWorkModeAtom)
   const debugMode = useAtomValue(agentsDebugModeAtom)
+  const customClaudeConfig = useAtomValue(customClaudeConfigAtom)
+  const normalizedCustomClaudeConfig =
+    normalizeCustomClaudeConfig(customClaudeConfig)
+  const hasCustomClaudeConfig = Boolean(normalizedCustomClaudeConfig)
   const setSettingsDialogOpen = useSetAtom(agentsSettingsDialogOpenAtom)
   const setSettingsActiveTab = useSetAtom(agentsSettingsDialogActiveTabAtom)
   const setJustCreatedIds = useSetAtom(justCreatedIdsAtom)
@@ -258,29 +267,37 @@ export function NewChatForm({
 
   // Get available models (with offline support)
   const availableModels = useAvailableModels()
+  const [selectedOllamaModel, setSelectedOllamaModel] = useAtom(selectedOllamaModelAtom)
 
   const [selectedModel, setSelectedModel] = useState(
     () =>
       availableModels.models.find((m) => m.id === lastSelectedModelId) || availableModels.models[1],
   )
+
+  // Determine current Ollama model (selected or recommended)
+  const currentOllamaModel = selectedOllamaModel || availableModels.recommendedModel || availableModels.ollamaModels[0]
   const [repoPopoverOpen, setRepoPopoverOpen] = useState(false)
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
   const [lastSelectedBranches, setLastSelectedBranches] = useAtom(
     lastSelectedBranchesAtom,
   )
   const [branchSearch, setBranchSearch] = useState("")
+  const [selectedBranchType, setSelectedBranchType] = useState<
+    "local" | "remote" | undefined
+  >(undefined)
 
   // Get/set selected branch for current project (persisted per project)
   const selectedBranch = validatedProject?.id
-    ? lastSelectedBranches[validatedProject.id] || ""
+    ? lastSelectedBranches[validatedProject.id]?.name || ""
     : ""
   const setSelectedBranch = useCallback(
-    (branch: string) => {
-      if (validatedProject?.id) {
+    (branch: string, type?: "local" | "remote") => {
+      if (validatedProject?.id && type) {
         setLastSelectedBranches((prev) => ({
           ...prev,
-          [validatedProject.id]: branch,
+          [validatedProject.id]: { name: branch, type },
         }))
+        setSelectedBranchType(type)
       }
     },
     [validatedProject?.id, setLastSelectedBranches],
@@ -288,6 +305,20 @@ export function NewChatForm({
   const branchListRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<AgentsMentionsEditorHandle>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Restore selectedBranchType from persisted storage when project changes
+  useEffect(() => {
+    if (validatedProject?.id) {
+      const stored = lastSelectedBranches[validatedProject.id]
+      if (stored?.type) {
+        setSelectedBranchType(stored.type)
+      } else {
+        setSelectedBranchType(undefined)
+      }
+    } else {
+      setSelectedBranchType(undefined)
+    }
+  }, [validatedProject?.id, lastSelectedBranches])
 
   // Image upload hook
   const {
@@ -297,6 +328,19 @@ export function NewChatForm({
     clearImages,
     isUploading,
   } = useAgentsFileUpload()
+
+  // Pasted text files - use a stable temp ID for new chat
+  const tempPastedIdRef = useRef(`new-chat-${Date.now()}`)
+  const {
+    pastedTexts,
+    addPastedText,
+    removePastedText,
+    clearPastedTexts,
+  } = usePastedTextFiles(tempPastedIdRef.current)
+
+  // File contents cache - stores content for file mentions (keyed by mentionId)
+  // This content gets added to the prompt when sending, without showing a separate card
+  const fileContentsRef = useRef<Map<string, string>>(new Map())
 
   // Mention dropdown state
   const [showMentionDropdown, setShowMentionDropdown] = useState(false)
@@ -323,6 +367,7 @@ export function NewChatForm({
   const tooltipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hasShownTooltipRef = useRef(false)
   const [modeDropdownOpen, setModeDropdownOpen] = useState(false)
+  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
 
   // Shift+Tab handler for mode switching (now handled inside input component via onShiftTab prop)
 
@@ -419,39 +464,44 @@ export function NewChatForm({
     },
   )
 
+  const fetchRemoteMutation = trpc.changes.fetchRemote.useMutation()
+
+  // Manual refresh branches
+  const handleRefreshBranches = useCallback(() => {
+    if (validatedProject?.path) {
+      fetchRemoteMutation.mutate(
+        { worktreePath: validatedProject.path },
+        {
+          onSuccess: () => {
+            branchesQuery.refetch()
+          },
+          onError: (error) => {
+            console.error("Failed to fetch remote branches:", error)
+          },
+        },
+      )
+    }
+  }, [validatedProject?.path, fetchRemoteMutation, branchesQuery])
+
   // Transform branch data to match web app format
   const branches = useMemo(() => {
     if (!branchesQuery.data) return []
 
     const { local, remote, defaultBranch } = branchesQuery.data
+    const result: Array<{
+      name: string
+      type: "local" | "remote"
+      protected: boolean
+      isDefault: boolean
+      committedAt: string | null
+      authorName: null
+    }> = []
 
-    // Combine local and remote branches, preferring local info
-    const branchMap = new Map<
-      string,
-      {
-        name: string
-        protected: boolean
-        isDefault: boolean
-        committedAt: string | null
-        authorName: null
-      }
-    >()
-
-    // Add remote branches first
-    for (const name of remote) {
-      branchMap.set(name, {
-        name,
-        protected: false,
-        isDefault: name === defaultBranch,
-        committedAt: null,
-        authorName: null,
-      })
-    }
-
-    // Override with local branches (they have commit dates)
+    // Add local branches
     for (const { branch, lastCommitDate } of local) {
-      branchMap.set(branch, {
+      result.push({
         name: branch,
+        type: "local",
         protected: false,
         isDefault: branch === defaultBranch,
         committedAt: lastCommitDate
@@ -461,18 +511,23 @@ export function NewChatForm({
       })
     }
 
-    // Sort: default first, then by commit date
-    return Array.from(branchMap.values()).sort((a, b) => {
+    // Add remote branches
+    for (const name of remote) {
+      result.push({
+        name: name,
+        type: "remote",
+        protected: false,
+        isDefault: name === defaultBranch,
+        committedAt: null,
+        authorName: null,
+      })
+    }
+
+    // Sort: default first, then local, then remote, alphabetically
+    return result.sort((a, b) => {
       if (a.isDefault && !b.isDefault) return -1
       if (!a.isDefault && b.isDefault) return 1
-      // Sort by commit date (most recent first)
-      if (a.committedAt && b.committedAt) {
-        return (
-          new Date(b.committedAt).getTime() - new Date(a.committedAt).getTime()
-        )
-      }
-      if (a.committedAt) return -1
-      if (b.committedAt) return 1
+      if (a.type !== b.type) return a.type === "local" ? -1 : 1
       return a.name.localeCompare(b.name)
     })
   }, [branchesQuery.data])
@@ -517,13 +572,26 @@ export function NewChatForm({
       validatedProject?.id &&
       !selectedBranch
     ) {
-      setSelectedBranch(branchesQuery.data.defaultBranch)
+      // Find the default branch in the branches list to get its type
+      // Prefer local over remote if both exist
+      const defaultBranchObj = branches.find(
+        (b) => b.name === branchesQuery.data.defaultBranch && b.isDefault && b.type === "local",
+      ) || branches.find(
+        (b) => b.name === branchesQuery.data.defaultBranch && b.isDefault && b.type === "remote",
+      )
+      // Fallback to "local" if branch not found in list (shouldn't happen but prevents empty selector)
+      const branchType = defaultBranchObj?.type || "local"
+      setSelectedBranch(
+        branchesQuery.data.defaultBranch,
+        branchType,
+      )
     }
   }, [
     branchesQuery.data?.defaultBranch,
     validatedProject?.id,
     selectedBranch,
     setSelectedBranch,
+    branches,
   ])
 
   // Auto-focus input when NewChatForm is shown (when clicking "New Chat")
@@ -552,12 +620,20 @@ export function NewChatForm({
     prevSelectedDraftIdRef.current = selectedDraftId
 
     if (!selectedDraftId) {
-      // No draft selected - clear editor if we had a draft before (user clicked "New Workspace")
-      currentDraftIdRef.current = null
-      lastSavedTextRef.current = ""
-      if (hadDraftBefore && editorRef.current) {
-        editorRef.current.clear()
-        setHasContent(false)
+      // No draft selected - only clear if we had a draft before (user clicked "New Workspace")
+      // Don't clear if user is currently typing (currentDraftIdRef has a value)
+      if (hadDraftBefore) {
+        currentDraftIdRef.current = null
+        lastSavedTextRef.current = ""
+        if (editorRef.current) {
+          editorRef.current.clear()
+          setHasContent(false)
+        }
+
+        // Fetch remote branches in background when starting new workspace
+        if (validatedProject?.path) {
+          handleRefreshBranches()
+        }
       }
       return
     }
@@ -581,7 +657,7 @@ export function NewChatForm({
         return () => clearTimeout(timeoutId)
       }
     }
-  }, [selectedDraftId])
+  }, [selectedDraftId, handleRefreshBranches, validatedProject?.path])
 
   // Mark draft as visible when component unmounts (user navigates away)
   // This ensures the draft only appears in the sidebar after leaving the form
@@ -618,9 +694,11 @@ export function NewChatForm({
   const utils = trpc.useUtils()
   const createChatMutation = trpc.chats.create.useMutation({
     onSuccess: (data) => {
-      // Clear editor and images only on success
+      // Clear editor, images, pasted texts, and file contents cache only on success
       editorRef.current?.clear()
       clearImages()
+      clearPastedTexts()
+      fileContentsRef.current.clear()
       clearCurrentDraft()
       utils.chats.list.invalidate()
       setSelectedChatId(data.id)
@@ -690,15 +768,54 @@ export function NewChatForm({
     }
   }
 
-  const handleSend = useCallback(() => {
-    // Get value from uncontrolled editor
-    const message = editorRef.current?.getValue() || ""
+  const trpcUtils = trpc.useUtils()
 
-    if (!message.trim() || !selectedProject) {
+  const handleSend = useCallback(async () => {
+    // Get value from uncontrolled editor
+    let message = editorRef.current?.getValue() || ""
+
+    // Allow send if there's text, images, or pasted text files
+    const hasText = message.trim().length > 0
+    const hasImages = images.filter((img) => !img.isLoading && img.url).length > 0
+    const hasPastedTexts = pastedTexts.length > 0
+
+    if ((!hasText && !hasImages && !hasPastedTexts) || !selectedProject) {
       return
     }
 
-    // Build message parts array (images first, then text)
+    // Check if message is a slash command with arguments (e.g. "/hello world")
+    // Note: 's' flag makes '.' match newlines, so multi-line arguments are captured
+    const slashMatch = message.match(/^\/(\S+)\s*(.*)$/s)
+    if (slashMatch) {
+      const [, commandName, args] = slashMatch
+
+      // Check if it's a builtin command - if so, don't process as custom command
+      const builtinNames = new Set(
+        BUILTIN_SLASH_COMMANDS.map((cmd) => cmd.name),
+      )
+      if (!builtinNames.has(commandName)) {
+        // This is a custom command - load content and replace $ARGUMENTS
+        try {
+          const commands = await trpcUtils.commands.list.fetch({
+            projectPath: validatedProject?.path,
+          })
+          const cmd = commands.find((c) => c.name.toLowerCase() === commandName.toLowerCase())
+
+          if (cmd) {
+            const { content } = await trpcUtils.commands.getContent.fetch({
+              path: cmd.path,
+            })
+            // Replace $ARGUMENTS with the provided args
+            message = content.replace(/\$ARGUMENTS/g, args.trim())
+          }
+        } catch (error) {
+          console.error("Failed to process custom command:", error)
+          // Fall through with original message
+        }
+      }
+    }
+
+    // Build message parts array (images first, then text, then hidden file contents)
     type MessagePart =
       | { type: "text"; text: string }
       | {
@@ -709,6 +826,11 @@ export function NewChatForm({
             filename?: string
             base64Data?: string
           }
+        }
+      | {
+          type: "file-content"
+          filePath: string
+          content: string
         }
 
     const parts: MessagePart[] = images
@@ -723,8 +845,36 @@ export function NewChatForm({
         },
       }))
 
-    if (message.trim()) {
-      parts.push({ type: "text" as const, text: message.trim() })
+    // Add pasted text as pasted mentions (format: pasted:size:preview|filepath)
+    // Using | as separator since filepath can contain colons
+    let finalMessage = message.trim()
+    if (pastedTexts.length > 0) {
+      const pastedMentions = pastedTexts
+        .map((pt) => {
+          // Sanitize preview to remove special characters that break mention parsing
+          const sanitizedPreview = pt.preview.replace(/[:\[\]|]/g, "")
+          return `@[${MENTION_PREFIXES.PASTED}${pt.size}:${sanitizedPreview}|${pt.filePath}]`
+        })
+        .join(" ")
+      finalMessage = pastedMentions + (finalMessage ? " " + finalMessage : "")
+    }
+
+    if (finalMessage) {
+      parts.push({ type: "text" as const, text: finalMessage })
+    }
+
+    // Add cached file contents as hidden parts (sent to agent but not displayed in UI)
+    // These are from dropped text files - content is embedded so agent sees it immediately
+    if (fileContentsRef.current.size > 0) {
+      for (const [mentionId, content] of fileContentsRef.current.entries()) {
+        // Extract file path from mentionId (file:local:path or file:external:path)
+        const filePath = mentionId.replace(/^file:(local|external):/, "")
+        parts.push({
+          type: "file-content" as const,
+          filePath,
+          content,
+        })
+      }
     }
 
     // Create chat with selected project, branch, and initial message
@@ -734,18 +884,24 @@ export function NewChatForm({
       initialMessageParts: parts.length > 0 ? parts : undefined,
       baseBranch:
         workMode === "worktree" ? selectedBranch || undefined : undefined,
+      branchType:
+        workMode === "worktree" ? selectedBranchType : undefined,
       useWorktree: workMode === "worktree",
       mode: isPlanMode ? "plan" : "agent",
     })
-    // Editor and images are cleared in onSuccess callback
+    // Editor, images, and pasted texts are cleared in onSuccess callback
   }, [
     selectedProject,
+    validatedProject?.path,
     createChatMutation,
     hasContent,
     selectedBranch,
+    selectedBranchType,
     workMode,
     images,
+    pastedTexts,
     isPlanMode,
+    trpcUtils,
   ])
 
   const handleMentionSelect = useCallback((mention: FileMentionOption) => {
@@ -877,54 +1033,36 @@ export function NewChatForm({
       editorRef.current?.clearSlashCommand()
       setShowSlashDropdown(false)
 
-      // Handle builtin commands
+      // Handle builtin commands that change app state (no text input needed)
       if (command.category === "builtin") {
         switch (command.name) {
           case "clear":
             editorRef.current?.clear()
-            break
+            return
           case "plan":
             if (!isPlanMode) {
               setIsPlanMode(true)
             }
-            break
+            return
           case "agent":
             if (isPlanMode) {
               setIsPlanMode(false)
             }
-            break
-          // Prompt-based commands - auto-send to agent
-          case "review":
-          case "pr-comments":
-          case "release-notes":
-          case "security-review": {
-            const prompt =
-              COMMAND_PROMPTS[command.name as keyof typeof COMMAND_PROMPTS]
-            if (prompt) {
-              editorRef.current?.setValue(prompt)
-              // Auto-send the prompt to agent
-              setTimeout(() => handleSend(), 0)
-            }
-            break
-          }
+            return
         }
-        return
       }
 
-      // Handle repository commands - auto-send to agent
-      if (command.prompt) {
-        editorRef.current?.setValue(command.prompt)
-        setTimeout(() => handleSend(), 0)
-      }
+      // For all other commands (builtin prompts and custom):
+      // insert the command and let user add arguments or press Enter to send
+      editorRef.current?.setValue(`/${command.name} `)
     },
-    [isPlanMode, setIsPlanMode, handleSend],
+    [isPlanMode, setIsPlanMode],
   )
 
-  // Paste handler for images and plain text
-  // Uses async text insertion to prevent UI freeze with large text
+  // Paste handler for images, plain text, and large text (saved as files)
   const handlePaste = useCallback(
-    (e: React.ClipboardEvent) => handlePasteEvent(e, handleAddAttachments),
-    [handleAddAttachments],
+    (e: React.ClipboardEvent) => handlePasteEvent(e, handleAddAttachments, addPastedText),
+    [handleAddAttachments, addPastedText],
   )
 
   // Drag and drop handlers
@@ -943,14 +1081,128 @@ export function NewChatForm({
     setIsDragOver(false)
   }, [])
 
+  // Text file extensions that should have content read and attached
+  const TEXT_FILE_EXTENSIONS = new Set([
+    // Code
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".py", ".rb", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".h", ".hpp",
+    ".cs", ".php", ".lua", ".r", ".m", ".mm", ".scala", ".clj", ".ex", ".exs",
+    ".hs", ".elm", ".erl", ".fs", ".fsx", ".ml", ".v", ".vhdl", ".zig",
+    // Config/Data
+    ".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".env", ".conf", ".cfg",
+    ".properties", ".plist",
+    // Web
+    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".astro",
+    // Documentation
+    ".md", ".mdx", ".rst", ".txt", ".text",
+    // Graphics (text-based)
+    ".svg",
+    // Shell/Scripts
+    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd",
+    // Other
+    ".sql", ".graphql", ".gql", ".prisma", ".dockerfile", ".makefile",
+    ".gitignore", ".gitattributes", ".editorconfig", ".eslintrc", ".prettierrc",
+  ])
+
+  const MAX_FILE_SIZE_FOR_CONTENT = 100 * 1024 // 100KB - files larger than this only get path mention
+
+  // Image extensions that should be handled as attachments (base64)
+  const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"])
+
   const handleDrop = useCallback(
-    (e: React.DragEvent) => {
+    async (e: React.DragEvent) => {
       e.preventDefault()
       setIsDragOver(false)
-      const files = Array.from(e.dataTransfer.files).filter((f) =>
-        f.type.startsWith("image/"),
-      )
-      handleAddAttachments(files)
+      const droppedFiles = Array.from(e.dataTransfer.files)
+
+      // Separate images from other files
+      const imageFiles: File[] = []
+      const otherFiles: File[] = []
+
+      for (const file of droppedFiles) {
+        const ext = file.name.includes(".") ? "." + file.name.split(".").pop()?.toLowerCase() : ""
+        if (IMAGE_EXTENSIONS.has(ext)) {
+          imageFiles.push(file)
+        } else {
+          otherFiles.push(file)
+        }
+      }
+
+      // Handle images via existing attachment system (base64)
+      if (imageFiles.length > 0) {
+        handleAddAttachments(imageFiles)
+      }
+
+      // Process other files - for text files, read content and add as file mention
+      for (const file of otherFiles) {
+        // Get file path using Electron's webUtils API (more reliable than file.path)
+        const filePath: string | undefined = window.webUtils?.getPathForFile?.(file) || (file as File & { path?: string }).path
+
+        let mentionId: string
+        let mentionPath: string
+
+        // Check if file is inside the project
+        if (
+          validatedProject?.path &&
+          filePath &&
+          filePath.startsWith(validatedProject.path)
+        ) {
+          // Project file: use relative path with file:local: prefix
+          const relativePath = filePath
+            .slice(validatedProject.path.length)
+            .replace(/^\//, "")
+          mentionId = `file:local:${relativePath}`
+          mentionPath = relativePath
+        } else if (filePath) {
+          // External file: use absolute path with file:external: prefix
+          mentionId = `file:external:${filePath}`
+          mentionPath = filePath
+        } else {
+          // Fallback: use filename only
+          mentionId = `file:external:${file.name}`
+          mentionPath = file.name
+        }
+
+        const fileName = file.name
+        const ext = fileName.includes(".") ? "." + fileName.split(".").pop()?.toLowerCase() : ""
+        // Files without extension are likely directories or special files - skip content reading
+        const hasExtension = ext !== ""
+        const isTextFile = hasExtension && TEXT_FILE_EXTENSIONS.has(ext)
+        const isSmallEnough = file.size <= MAX_FILE_SIZE_FOR_CONTENT
+
+        // For text files that are small enough, read content and store it
+        // Show file chip, content will be added to prompt on send
+        if (isTextFile && isSmallEnough && filePath) {
+          // Add file chip for visual representation
+          editorRef.current?.insertMention({
+            id: mentionId,
+            label: fileName,
+            path: mentionPath,
+            repository: "local",
+            type: "file",
+          })
+
+          // Read and cache content (will be added to prompt on send)
+          try {
+            const content = await trpcUtils.files.readFile.fetch({ filePath })
+            fileContentsRef.current.set(mentionId, content)
+          } catch (err) {
+            // If reading fails, chip is still there - agent can try to read via path
+            console.error(`[handleDrop] Failed to read file content ${filePath}:`, err)
+          }
+        } else {
+          // For binary files, large files - add as mention only
+          // mentionPath contains full absolute path for external files
+          editorRef.current?.insertMention({
+            id: mentionId,
+            label: fileName,
+            path: mentionPath,
+            repository: "local",
+            type: "file",
+          })
+        }
+      }
+
       // Focus after state update - use double rAF to wait for React render
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -958,12 +1210,12 @@ export function NewChatForm({
         })
       })
     },
-    [handleAddAttachments],
+    [validatedProject?.path, handleAddAttachments, trpcUtils],
   )
 
-  // Context items for images
+  // Context items for images and pasted text files
   const contextItems =
-    images.length > 0 ? (
+    images.length > 0 || pastedTexts.length > 0 ? (
       <div className="flex flex-wrap gap-[6px]">
         {(() => {
           // Build allImages array for gallery navigation
@@ -988,6 +1240,16 @@ export function NewChatForm({
             />
           ))
         })()}
+        {pastedTexts.map((pt) => (
+          <AgentPastedTextItem
+            key={pt.id}
+            filePath={pt.filePath}
+            filename={pt.filename}
+            size={pt.size}
+            preview={pt.preview}
+            onRemove={() => removePastedText(pt.id)}
+          />
+        ))}
       </div>
     ) : null
 
@@ -1263,76 +1525,111 @@ export function NewChatForm({
                           )}
                       </DropdownMenu>
 
-                      {/* Model selector */}
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <button className="flex items-center gap-1.5 px-2 py-1 text-sm text-muted-foreground hover:text-foreground transition-[background-color,color] duration-150 ease-out rounded-md hover:bg-muted/50 outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70">
-                            {selectedModel?.id === "offline" ? (
-                              <WifiOff className="h-3.5 w-3.5" />
-                            ) : (
-                              <ClaudeCodeIcon className="h-3.5 w-3.5" />
-                            )}
-                            <span>
-                              {selectedModel?.id === "offline" ? (
-                                selectedModel.name
-                              ) : (
-                                <>
-                                  {selectedModel?.name}{" "}
-                                  <span className="text-muted-foreground">4.5</span>
-                                </>
-                              )}
-                            </span>
-                            <IconChevronDown className="h-3 w-3 shrink-0 opacity-50" />
-                          </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent
-                          align="start"
-                          className="w-[200px]"
+                      {/* Model selector - shows Ollama models when offline, Claude models when online */}
+                      {availableModels.isOffline && availableModels.hasOllama ? (
+                        // Offline mode: show Ollama model selector
+                        <DropdownMenu
+                          open={isModelDropdownOpen}
+                          onOpenChange={setIsModelDropdownOpen}
                         >
-                          {availableModels.models.map((model) => {
-                            const isSelected = selectedModel?.id === model.id
-                            const isOfflineModel = model.id === "offline"
-                            // Disable non-offline models when offline
-                            const isDisabled = availableModels.isOffline && !isOfflineModel
-                            return (
-                              <DropdownMenuItem
-                                key={model.id}
-                                onClick={() => {
-                                  if (!isDisabled) {
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              className="flex items-center gap-1.5 px-2 py-1 text-sm text-muted-foreground hover:text-foreground transition-[background-color,color] duration-150 ease-out rounded-md hover:bg-muted/50 outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70 border border-border"
+                            >
+                              <Zap className="h-4 w-4" />
+                              <span>{currentOllamaModel || "Select model"}</span>
+                              <IconChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="w-[240px]">
+                            {availableModels.ollamaModels.map((model) => {
+                              const isSelected = model === currentOllamaModel
+                              const isRecommended = model === availableModels.recommendedModel
+                              return (
+                                <DropdownMenuItem
+                                  key={model}
+                                  onClick={() => setSelectedOllamaModel(model)}
+                                  className="gap-2 justify-between"
+                                >
+                                  <div className="flex items-center gap-1.5">
+                                    <Zap className="h-4 w-4 text-muted-foreground shrink-0" />
+                                    <span>
+                                      {model}
+                                      {isRecommended && (
+                                        <span className="text-muted-foreground ml-1">(recommended)</span>
+                                      )}
+                                    </span>
+                                  </div>
+                                  {isSelected && (
+                                    <CheckIcon className="h-3.5 w-3.5 shrink-0" />
+                                  )}
+                                </DropdownMenuItem>
+                              )
+                            })}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      ) : (
+                        // Online mode: show Claude model selector
+                        <DropdownMenu
+                          open={hasCustomClaudeConfig ? false : isModelDropdownOpen}
+                          onOpenChange={(open) => {
+                            if (!hasCustomClaudeConfig) {
+                              setIsModelDropdownOpen(open)
+                            }
+                          }}
+                        >
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              disabled={hasCustomClaudeConfig}
+                              className={cn(
+                                "flex items-center gap-1.5 px-2 py-1 text-sm text-muted-foreground transition-[background-color,color] duration-150 ease-out rounded-md outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
+                                hasCustomClaudeConfig
+                                  ? "opacity-70 cursor-not-allowed"
+                                  : "hover:text-foreground hover:bg-muted/50",
+                              )}
+                            >
+                              <ClaudeCodeIcon className="h-3.5 w-3.5" />
+                              <span>
+                                {hasCustomClaudeConfig ? (
+                                  "Custom Model"
+                                ) : (
+                                  <>
+                                    {selectedModel?.name}{" "}
+                                    <span className="text-muted-foreground">4.5</span>
+                                  </>
+                                )}
+                              </span>
+                              <IconChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="w-[200px]">
+                            {availableModels.models.map((model) => {
+                              const isSelected = selectedModel?.id === model.id
+                              return (
+                                <DropdownMenuItem
+                                  key={model.id}
+                                  onClick={() => {
                                     setSelectedModel(model)
                                     setLastSelectedModelId(model.id)
-                                  }
-                                }}
-                                className="gap-2 justify-between"
-                                disabled={isDisabled}
-                              >
-                                <div className="flex items-center gap-1.5">
-                                  {isOfflineModel ? (
-                                    <WifiOff className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                                  ) : (
+                                  }}
+                                  className="gap-2 justify-between"
+                                >
+                                  <div className="flex items-center gap-1.5">
                                     <ClaudeCodeIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                    <span>
+                                      {model.name}{" "}
+                                      <span className="text-muted-foreground">4.5</span>
+                                    </span>
+                                  </div>
+                                  {isSelected && (
+                                    <CheckIcon className="h-3.5 w-3.5 shrink-0" />
                                   )}
-                                  <span>
-                                    {isOfflineModel ? (
-                                      model.name
-                                    ) : (
-                                      <>
-                                        {model.name}{" "}
-                                        <span className="text-muted-foreground">
-                                          4.5
-                                        </span>
-                                      </>
-                                    )}
-                                  </span>
-                                </div>
-                                {isSelected && (
-                                  <CheckIcon className="h-3.5 w-3.5 shrink-0" />
-                                )}
-                              </DropdownMenuItem>
-                            )
-                          })}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                                </DropdownMenuItem>
+                              )
+                            })}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-0.5 ml-auto flex-shrink-0">
@@ -1471,13 +1768,14 @@ export function NewChatForm({
                                   const branch =
                                     filteredBranches[virtualItem.index]
                                   const isSelected =
-                                    selectedBranch === branch.name ||
-                                    (!selectedBranch && branch.isDefault)
+                                    (selectedBranch === branch.name &&
+                                      selectedBranchType === branch.type) ||
+                                    (!selectedBranch && branch.isDefault && branch.type === "local")
                                   return (
                                     <button
-                                      key={branch.name}
+                                      key={`${branch.type}-${branch.name}`}
                                       onClick={() => {
-                                        setSelectedBranch(branch.name)
+                                        setSelectedBranch(branch.name, branch.type)
                                         setBranchPopoverOpen(false)
                                         setBranchSearch("")
                                       }}
@@ -1495,6 +1793,16 @@ export function NewChatForm({
                                       <BranchIcon className="h-4 w-4 text-muted-foreground shrink-0" />
                                       <span className="truncate flex-1">
                                         {branch.name}
+                                      </span>
+                                      <span
+                                        className={cn(
+                                          "text-[10px] px-1.5 py-0.5 rounded shrink-0",
+                                          branch.type === "local"
+                                            ? "bg-blue-500/10 text-blue-500"
+                                            : "bg-orange-500/10 text-orange-500",
+                                        )}
+                                      >
+                                        {branch.type}
                                       </span>
                                       {branch.committedAt && (
                                         <span className="text-xs text-muted-foreground/70 shrink-0">
@@ -1532,7 +1840,7 @@ export function NewChatForm({
                         branchesQuery.data?.defaultBranch || "main"
                       }
                       onBranchCreated={(branchName) => {
-                        setSelectedBranch(branchName)
+                        setSelectedBranch(branchName, "local")
                       }}
                     />
                   )}
@@ -1602,8 +1910,7 @@ export function NewChatForm({
                   onSelect={handleSlashSelect}
                   searchText={slashSearchText}
                   position={slashPosition}
-                  teamId={selectedTeamId || undefined}
-                  repository={resolvedRepo?.full_name}
+                  projectPath={validatedProject?.path}
                   isPlanMode={isPlanMode}
                   disabledCommands={["clear"]}
                 />

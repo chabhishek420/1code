@@ -9,6 +9,7 @@ import {
   isStreamingAtom,
   chatStatusAtom,
 } from "../stores/message-store"
+import { extractTextMentions, TextMentionBlocks } from "../mentions/render-file-mentions"
 
 // ============================================================================
 // MESSAGE STORE - External store for fine-grained subscriptions
@@ -285,6 +286,7 @@ export function useStreamingStatus() {
 interface MessageItemWrapperProps {
   messageId: string
   subChatId: string
+  chatId: string
   isMobile: boolean
   sandboxSetupStatus: "cloning" | "ready" | "error"
 }
@@ -356,11 +358,13 @@ function useIsStreaming() {
 const NonStreamingMessageItem = memo(function NonStreamingMessageItem({
   messageId,
   subChatId,
+  chatId,
   isMobile,
   sandboxSetupStatus,
 }: {
   messageId: string
   subChatId: string
+  chatId: string
   isMobile: boolean
   sandboxSetupStatus: "cloning" | "ready" | "error"
 }) {
@@ -376,6 +380,7 @@ const NonStreamingMessageItem = memo(function NonStreamingMessageItem({
       isStreaming={false}
       status="ready"
       subChatId={subChatId}
+      chatId={chatId}
       isMobile={isMobile}
       sandboxSetupStatus={sandboxSetupStatus}
     />
@@ -387,11 +392,13 @@ const NonStreamingMessageItem = memo(function NonStreamingMessageItem({
 const StreamingMessageItem = memo(function StreamingMessageItem({
   messageId,
   subChatId,
+  chatId,
   isMobile,
   sandboxSetupStatus,
 }: {
   messageId: string
   subChatId: string
+  chatId: string
   isMobile: boolean
   sandboxSetupStatus: "cloning" | "ready" | "error"
 }) {
@@ -411,6 +418,7 @@ const StreamingMessageItem = memo(function StreamingMessageItem({
       isStreaming={isStreaming}
       status={status}
       subChatId={subChatId}
+      chatId={chatId}
       isMobile={isMobile}
       sandboxSetupStatus={sandboxSetupStatus}
     />
@@ -467,6 +475,7 @@ function useMessageWithLastStatus(messageId: string) {
 export const MessageItemWrapper = memo(function MessageItemWrapper({
   messageId,
   subChatId,
+  chatId,
   isMobile,
   sandboxSetupStatus,
 }: MessageItemWrapperProps) {
@@ -482,6 +491,7 @@ export const MessageItemWrapper = memo(function MessageItemWrapper({
       <StreamingMessageItem
         messageId={messageId}
         subChatId={subChatId}
+        chatId={chatId}
         isMobile={isMobile}
         sandboxSetupStatus={sandboxSetupStatus}
       />
@@ -493,6 +503,7 @@ export const MessageItemWrapper = memo(function MessageItemWrapper({
     <NonStreamingMessageItem
       messageId={messageId}
       subChatId={subChatId}
+      chatId={chatId}
       isMobile={isMobile}
       sandboxSetupStatus={sandboxSetupStatus}
     />
@@ -511,6 +522,7 @@ export const MessageItemWrapper = memo(function MessageItemWrapper({
 interface MemoizedAssistantMessagesProps {
   assistantMsgIds: string[]
   subChatId: string
+  chatId: string
   isMobile: boolean
   sandboxSetupStatus: "cloning" | "ready" | "error"
 }
@@ -533,6 +545,7 @@ function areMemoizedAssistantMessagesEqual(
 
   // Also check static props
   if (prev.subChatId !== next.subChatId) return false
+  if (prev.chatId !== next.chatId) return false
   if (prev.isMobile !== next.isMobile) return false
   if (prev.sandboxSetupStatus !== next.sandboxSetupStatus) return false
 
@@ -542,6 +555,7 @@ function areMemoizedAssistantMessagesEqual(
 export const MemoizedAssistantMessages = memo(function MemoizedAssistantMessages({
   assistantMsgIds,
   subChatId,
+  chatId,
   isMobile,
   sandboxSetupStatus,
 }: MemoizedAssistantMessagesProps) {
@@ -556,6 +570,7 @@ export const MemoizedAssistantMessages = memo(function MemoizedAssistantMessages
           key={id}
           messageId={id}
           subChatId={subChatId}
+          chatId={chatId}
           isMobile={isMobile}
           sandboxSetupStatus={sandboxSetupStatus}
         />
@@ -713,12 +728,14 @@ export function useMessageGroups() {
 
 interface MessagesListProps {
   subChatId: string
+  chatId: string
   isMobile: boolean
   sandboxSetupStatus: "cloning" | "ready" | "error"
 }
 
 export const MessagesList = memo(function MessagesList({
   subChatId,
+  chatId,
   isMobile,
   sandboxSetupStatus,
 }: MessagesListProps) {
@@ -731,6 +748,7 @@ export const MessagesList = memo(function MessagesList({
           key={id}
           messageId={id}
           subChatId={subChatId}
+          chatId={chatId}
           isMobile={isMobile}
           sandboxSetupStatus={sandboxSetupStatus}
         />
@@ -906,6 +924,7 @@ interface SimpleIsolatedGroupProps {
     messageId: string
     textContent: string
     imageParts: any[]
+    skipTextMentionBlocks?: boolean
   }>
   ToolCallComponent: React.ComponentType<{
     icon: any
@@ -957,12 +976,18 @@ export const SimpleIsolatedGroup = memo(function SimpleIsolatedGroup({
   if (!userMsg) return null
 
   // User message data
-  const textContent = userMsg.parts
+  const rawTextContent = userMsg.parts
     ?.filter((p: any) => p.type === "text")
     .map((p: any) => p.text)
     .join("\n") || ""
 
   const imageParts = userMsg.parts?.filter((p: any) => p.type === "data-image") || []
+
+  // Extract text mentions (quote/diff) to render separately above sticky block
+  const { textMentions, cleanedText: textContent } = useMemo(
+    () => extractTextMentions(rawTextContent),
+    [rawTextContent]
+  )
 
   // Show cloning when sandbox is being set up
   const shouldShowCloning =
@@ -985,7 +1010,15 @@ export const SimpleIsolatedGroup = memo(function SimpleIsolatedGroup({
             messageId={userMsg.id}
             textContent=""
             imageParts={imageParts}
+            skipTextMentionBlocks
           />
+        </div>
+      )}
+
+      {/* Text mentions (quote/diff) - NOT sticky */}
+      {textMentions.length > 0 && (
+        <div className="mb-2 pointer-events-auto">
+          <TextMentionBlocks mentions={textMentions} />
         </div>
       )}
 
@@ -998,6 +1031,7 @@ export const SimpleIsolatedGroup = memo(function SimpleIsolatedGroup({
           messageId={userMsg.id}
           textContent={textContent}
           imageParts={[]}
+          skipTextMentionBlocks
         />
 
         {/* Cloning indicator */}

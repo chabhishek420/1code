@@ -54,6 +54,7 @@ import {
 } from "../../components/ui/tooltip"
 import { Kbd } from "../../components/ui/kbd"
 import { isDesktopApp, getShortcutKey } from "../../lib/utils/platform"
+import { useResolvedHotkeyDisplay } from "../../lib/hotkeys"
 import { TrafficLightSpacer } from "../agents/components/traffic-light-spacer"
 import { PopoverTrigger } from "../../components/ui/popover"
 import { AlignJustify } from "lucide-react"
@@ -92,7 +93,7 @@ interface SidebarSearchHistoryPopoverProps {
   sortedSubChats: SubChatMeta[]
   loadingSubChats: Map<string, string>
   subChatUnseenChanges: Set<string>
-  pendingQuestions: { subChatId: string } | null
+  pendingQuestionsMap: Map<string, { subChatId: string }>
   allSubChatsLength: number
   onSelect: (subChat: SubChatMeta) => void
 }
@@ -101,7 +102,7 @@ const SidebarSearchHistoryPopover = memo(function SidebarSearchHistoryPopover({
   sortedSubChats,
   loadingSubChats,
   subChatUnseenChanges,
-  pendingQuestions,
+  pendingQuestionsMap,
   allSubChatsLength,
   onSelect,
 }: SidebarSearchHistoryPopoverProps) {
@@ -112,7 +113,7 @@ const SidebarSearchHistoryPopover = memo(function SidebarSearchHistoryPopover({
     const isLoading = loadingSubChats.has(subChat.id)
     const hasUnseen = subChatUnseenChanges.has(subChat.id)
     const mode = subChat.mode || "agent"
-    const hasPendingQuestion = pendingQuestions?.subChatId === subChat.id
+    const hasPendingQuestion = pendingQuestionsMap.has(subChat.id)
 
     return (
       <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -140,7 +141,7 @@ const SidebarSearchHistoryPopover = memo(function SidebarSearchHistoryPopover({
         </span>
       </div>
     )
-  }, [loadingSubChats, subChatUnseenChanges, pendingQuestions])
+  }, [loadingSubChats, subChatUnseenChanges, pendingQuestionsMap])
 
   return (
     <SearchCombobox
@@ -219,9 +220,24 @@ export function AgentsSubChatsSidebar({
 
   const utils = trpc.useUtils()
 
+  // SubChat name tooltip - using refs instead of state to avoid re-renders on hover
+  // Declared here so they can be used in archive mutation's onSuccess
+  const subChatNameRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
+  const subChatTooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const tooltipRef = useRef<HTMLDivElement>(null)
+
   // Archive parent chat mutation
   const archiveChatMutation = trpc.chats.archive.useMutation({
     onSuccess: (_, variables) => {
+      // Hide tooltip if visible (element may be removed from DOM before mouseLeave fires)
+      if (subChatTooltipTimerRef.current) {
+        clearTimeout(subChatTooltipTimerRef.current)
+        subChatTooltipTimerRef.current = null
+      }
+      if (tooltipRef.current) {
+        tooltipRef.current.style.display = "none"
+      }
+
       utils.chats.list.invalidate()
       utils.chats.listArchived.invalidate()
 
@@ -240,8 +256,11 @@ export function AgentsSubChatsSidebar({
   })
   const subChatUnseenChanges = useAtomValue(agentsSubChatUnseenChangesAtom)
   const setSubChatUnseenChanges = useSetAtom(agentsSubChatUnseenChangesAtom)
+
+  // Resolved hotkey for tooltip
+  const newAgentHotkey = useResolvedHotkeyDisplay("new-agent")
   const [justCreatedIds, setJustCreatedIds] = useAtom(justCreatedIdsAtom)
-  const pendingQuestions = useAtomValue(pendingUserQuestionsAtom)
+  const pendingQuestionsMap = useAtomValue(pendingUserQuestionsAtom)
 
   // Pending plan approvals from DB - only for open sub-chats
   const { data: pendingPlanApprovalsData } = trpc.chats.getPendingPlanApprovals.useQuery(
@@ -277,11 +296,6 @@ export function AgentsSubChatsSidebar({
   const [subChatToArchive, setSubChatToArchive] = useState<SubChatMeta | null>(
     null,
   )
-
-  // SubChat name tooltip - using refs instead of state to avoid re-renders on hover
-  const subChatNameRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
-  const subChatTooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const tooltipRef = useRef<HTMLDivElement>(null)
 
   // Multi-select state
   const [selectedSubChatIds, setSelectedSubChatIds] = useAtom(
@@ -947,7 +961,7 @@ export function AgentsSubChatsSidebar({
         sortedSubChats={sortedSubChats}
         loadingSubChats={loadingSubChats}
         subChatUnseenChanges={subChatUnseenChanges}
-        pendingQuestions={pendingQuestions}
+        pendingQuestionsMap={pendingQuestionsMap}
         allSubChatsLength={allSubChats.length}
         onSelect={handleSelectFromHistory}
       />
@@ -1118,7 +1132,7 @@ export function AgentsSubChatsSidebar({
               </TooltipTrigger>
             <TooltipContent side="right">
               Create a new chat
-              <Kbd>{getShortcutKey("newTab")}</Kbd>
+              {newAgentHotkey && <Kbd>{newAgentHotkey}</Kbd>}
             </TooltipContent>
           </Tooltip>
           </div>
@@ -1195,7 +1209,7 @@ export function AgentsSubChatsSidebar({
                           const mode = subChat.mode || "agent"
                           const isChecked = selectedSubChatIds.has(subChat.id)
                           const draftText = getDraftText(subChat.id)
-                          const hasPendingQuestion = pendingQuestions?.subChatId === subChat.id
+                          const hasPendingQuestion = pendingQuestionsMap.has(subChat.id)
                           const hasPendingPlan = pendingPlanApprovals.has(subChat.id)
                           const fileChanges = subChatFiles.get(subChat.id) || []
                           const stats =
@@ -1246,7 +1260,7 @@ export function AgentsSubChatsSidebar({
                                     handleSubChatMouseLeave()
                                   }}
                                   className={cn(
-                                    "w-full text-left py-1.5 transition-colors duration-150 cursor-pointer group relative",
+                                    "w-full text-left py-1.5 transition-colors duration-75 cursor-pointer group relative",
                                     "outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
                                     isMultiSelectMode ? "px-3" : "pl-2 pr-2",
                                     isMultiSelectMode ? "" : "rounded-md",
@@ -1426,6 +1440,7 @@ export function AgentsSubChatsSidebar({
                                   isOnlyChat={openSubChats.length === 1}
                                   currentIndex={globalIndex}
                                   totalCount={filteredSubChats.length}
+                                  chatId={parentChatId}
                                 />
                               )}
                             </ContextMenu>
@@ -1468,7 +1483,7 @@ export function AgentsSubChatsSidebar({
                           const mode = subChat.mode || "agent"
                           const isChecked = selectedSubChatIds.has(subChat.id)
                           const draftText = getDraftText(subChat.id)
-                          const hasPendingQuestion = pendingQuestions?.subChatId === subChat.id
+                          const hasPendingQuestion = pendingQuestionsMap.has(subChat.id)
                           const hasPendingPlan = pendingPlanApprovals.has(subChat.id)
                           const fileChanges = subChatFiles.get(subChat.id) || []
                           const stats =
@@ -1519,7 +1534,7 @@ export function AgentsSubChatsSidebar({
                                     handleSubChatMouseLeave()
                                   }}
                                   className={cn(
-                                    "w-full text-left py-1.5 transition-colors duration-150 cursor-pointer group relative",
+                                    "w-full text-left py-1.5 transition-colors duration-75 cursor-pointer group relative",
                                     "outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70",
                                     isMultiSelectMode ? "px-3" : "pl-2 pr-2",
                                     isMultiSelectMode ? "" : "rounded-md",
@@ -1699,6 +1714,7 @@ export function AgentsSubChatsSidebar({
                                   isOnlyChat={openSubChats.length === 1}
                                   currentIndex={globalIndex}
                                   totalCount={filteredSubChats.length}
+                                  chatId={parentChatId}
                                 />
                               )}
                             </ContextMenu>
