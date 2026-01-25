@@ -16,6 +16,7 @@ import {
   fetchGitHubPRStatus,
   getWorktreeDiff,
   removeWorktree,
+  sanitizeProjectName,
 } from "../../git"
 import { computeContentHash, gitCache } from "../../git/cache"
 import { splitUnifiedDiffByFile } from "../../git/diff-parser"
@@ -350,7 +351,7 @@ export const chatsRouter = router({
         )
         const result = await createWorktreeForChat(
           project.path,
-          project.id,
+          sanitizeProjectName(project.name),
           chat.id,
           input.baseBranch,
           input.branchType,
