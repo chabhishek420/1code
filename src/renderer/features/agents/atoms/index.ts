@@ -415,6 +415,33 @@ export const currentTodosAtomFamily = atomFamily((subChatId: string) =>
   ),
 )
 
+// Current task tools state per sub-chat (from TaskCreate/TaskUpdate/TaskList/TaskGet)
+// Synced from AgentTaskToolsGroup component snapshot cache
+export interface TaskToolItem {
+  id: string
+  subject: string
+  description?: string
+  activeForm?: string
+  status: "pending" | "in_progress" | "completed"
+}
+
+interface TaskToolState {
+  tasks: TaskToolItem[]
+}
+
+const allTaskToolsStorageAtom = atom<Record<string, TaskToolState>>({})
+
+// atomFamily to get/set task tool state per subChatId
+export const currentTaskToolsAtomFamily = atomFamily((subChatId: string) =>
+  atom(
+    (get) => get(allTaskToolsStorageAtom)[subChatId] ?? { tasks: [] },
+    (get, set, newState: TaskToolState) => {
+      const current = get(allTaskToolsStorageAtom)
+      set(allTaskToolsStorageAtom, { ...current, [subChatId]: newState })
+    },
+  ),
+)
+
 // Track sub-chats with unseen changes (finished streaming but user hasn't viewed them)
 // Updated by onFinish callback in Chat instances
 export const agentsSubChatUnseenChangesAtom = atom<Set<string>>(
@@ -862,3 +889,99 @@ export const agentsInboxSidebarWidthAtom = atomWithStorage<number>(
 // Inbox mobile view mode
 export type InboxMobileViewMode = "list" | "chat"
 export const inboxMobileViewModeAtom = atom<InboxMobileViewMode>("list")
+
+// File viewer display mode - sidebar (side peek), center dialog, or fullscreen
+export type FileViewerDisplayMode = "side-peek" | "center-peek" | "full-page"
+
+export const fileViewerDisplayModeAtom = atomWithStorage<FileViewerDisplayMode>(
+  "agents:fileViewerDisplayMode",
+  "side-peek",
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer sidebar width (persisted)
+export const fileViewerSidebarWidthAtom = atomWithStorage<number>(
+  "agents:fileViewerSidebarWidth",
+  500,
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer word wrap preference (persisted)
+export const fileViewerWordWrapAtom = atomWithStorage<boolean>(
+  "agents:fileViewerWordWrap",
+  false,
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer minimap preference (persisted)
+export const fileViewerMinimapAtom = atomWithStorage<boolean>(
+  "agents:fileViewerMinimap",
+  true,
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer line numbers preference (persisted)
+export const fileViewerLineNumbersAtom = atomWithStorage<boolean>(
+  "agents:fileViewerLineNumbers",
+  true,
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer sticky scroll preference (persisted)
+export const fileViewerStickyScrollAtom = atomWithStorage<boolean>(
+  "agents:fileViewerStickyScroll",
+  false,
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer render whitespace preference (persisted)
+export type FileViewerWhitespace = "none" | "selection" | "all"
+export const fileViewerWhitespaceAtom = atomWithStorage<FileViewerWhitespace>(
+  "agents:fileViewerWhitespace",
+  "selection",
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer bracket pair colorization preference (persisted)
+export const fileViewerBracketPairsAtom = atomWithStorage<boolean>(
+  "agents:fileViewerBracketPairs",
+  true,
+  undefined,
+  { getOnInit: true },
+)
+
+// File search dialog open state (Cmd+P)
+export const fileSearchDialogOpenAtom = atom<boolean>(false)
+
+// File viewer open state - stores the currently open file path per chatId
+const fileViewerOpenStorageAtom = atom<Record<string, string | null>>({})
+
+// Recently opened files - ordered list (most recent first), max 50
+const MAX_RECENT_FILES = 50
+export const recentlyOpenedFilesAtom = atom<string[]>([])
+
+export const fileViewerOpenAtomFamily = atomFamily((chatId: string) =>
+  atom(
+    (get) => get(fileViewerOpenStorageAtom)[chatId] ?? null,
+    (get, set, filePath: string | null) => {
+      const current = get(fileViewerOpenStorageAtom)
+      set(fileViewerOpenStorageAtom, { ...current, [chatId]: filePath })
+      // Track in recently opened files
+      if (filePath) {
+        const recent = get(recentlyOpenedFilesAtom)
+        const filtered = recent.filter((p) => p !== filePath)
+        set(
+          recentlyOpenedFilesAtom,
+          [filePath, ...filtered].slice(0, MAX_RECENT_FILES),
+        )
+      }
+    },
+  ),
+)

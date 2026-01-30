@@ -14,7 +14,7 @@ import {
   customHotkeysAtom,
   betaKanbanEnabledAtom,
 } from "../../lib/atoms"
-import { selectedAgentChatIdAtom, selectedProjectAtom, selectedDraftIdAtom, showNewChatFormAtom, desktopViewAtom } from "../agents/atoms"
+import { selectedAgentChatIdAtom, selectedProjectAtom, selectedDraftIdAtom, showNewChatFormAtom, desktopViewAtom, fileSearchDialogOpenAtom } from "../agents/atoms"
 import { trpc } from "../../lib/trpc"
 import { useAgentsHotkeys } from "../agents/lib/agents-hotkeys-manager"
 import { toggleSearchAtom } from "../agents/search"
@@ -89,6 +89,7 @@ export function AgentsLayout() {
   const [sidebarWidth, setSidebarWidth] = useAtom(agentsSidebarWidthAtom)
   const [settingsOpen, setSettingsOpen] = useAtom(agentsSettingsDialogOpenAtom)
   const setSettingsActiveTab = useSetAtom(agentsSettingsDialogActiveTabAtom)
+  const setFileSearchDialogOpen = useSetAtom(fileSearchDialogOpenAtom)
   const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
   const [selectedProject, setSelectedProject] = useAtom(selectedProjectAtom)
   const setSelectedDraftId = useSetAtom(selectedDraftIdAtom)
@@ -227,6 +228,7 @@ export function AgentsLayout() {
     setSidebarOpen,
     setSettingsDialogOpen: setSettingsOpen,
     setSettingsActiveTab,
+    setFileSearchDialogOpen,
     toggleChatSearch,
     selectedChatId,
     customHotkeysConfig,

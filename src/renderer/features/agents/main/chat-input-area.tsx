@@ -1371,12 +1371,11 @@ export const ChatInputArea = memo(function ChatInputArea({
                 </div>
 
                 <div className="flex items-center gap-0.5 ml-auto flex-shrink-0">
-                  {/* Hidden file input - accepts images and text/code files */}
+                  {/* Hidden file input - accepts any files */}
                   <input
                     type="file"
                     ref={fileInputRef}
                     hidden
-                    accept="image/jpeg,image/png,.txt,.md,.markdown,.json,.yaml,.yml,.xml,.csv,.tsv,.log,.ini,.cfg,.conf,.js,.ts,.jsx,.tsx,.py,.rb,.go,.rs,.java,.kt,.swift,.c,.cpp,.h,.hpp,.cs,.php,.html,.css,.scss,.sass,.less,.sql,.sh,.bash,.zsh,.ps1,.bat,.env,.gitignore,.dockerignore,.editorconfig,.prettierrc,.eslintrc,.babelrc,.nvmrc,.pdf"
                     multiple
                     onChange={(e) => {
                       const inputFiles = Array.from(e.target.files || [])

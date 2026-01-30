@@ -124,7 +124,7 @@ import { useAgentSubChatStore, OPEN_SUB_CHATS_CHANGE_EVENT } from "../agents/sto
 import { getWindowId } from "../../contexts/WindowContext"
 import { AgentsHelpPopover } from "../agents/components/agents-help-popover"
 import { getShortcutKey, isDesktopApp } from "../../lib/utils/platform"
-import { useResolvedHotkeyDisplay } from "../../lib/hotkeys"
+import { useResolvedHotkeyDisplay, useResolvedHotkeyDisplayWithAlt } from "../../lib/hotkeys"
 import { pluralize } from "../agents/utils/pluralize"
 import { useNewChatDrafts, deleteNewChatDraft, type NewChatDraft } from "../agents/lib/drafts"
 import {
@@ -1700,7 +1700,7 @@ export function AgentsSidebar({
   const { trigger: triggerHaptic } = useHaptic()
 
   // Resolved hotkey for tooltip
-  const newWorkspaceHotkey = useResolvedHotkeyDisplay("new-workspace")
+  const { primary: newWorkspaceHotkey, alt: newWorkspaceAltHotkey } = useResolvedHotkeyDisplayWithAlt("new-workspace")
 
   // Rename dialog state
   const [renameDialogOpen, setRenameDialogOpen] = useState(false)
@@ -3161,9 +3161,14 @@ export function AgentsSidebar({
                 <span className="text-sm font-medium">New Workspace</span>
               </ButtonCustom>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              Start a new workspace
-              {newWorkspaceHotkey && <Kbd>{newWorkspaceHotkey}</Kbd>}
+            <TooltipContent side="right" className="flex flex-col items-start gap-1">
+              <span>Start a new workspace</span>
+              {newWorkspaceHotkey && (
+                <span className="flex items-center gap-1.5">
+                  <Kbd>{newWorkspaceHotkey}</Kbd>
+                  {newWorkspaceAltHotkey && <><span className="text-[10px] opacity-50">or</span><Kbd>{newWorkspaceAltHotkey}</Kbd></>}
+                </span>
+              )}
             </TooltipContent>
           </Tooltip>
         </div>
