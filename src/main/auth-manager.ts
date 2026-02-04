@@ -216,7 +216,7 @@ export class AuthManager {
     if (this.isDev) {
       authUrl += `&callback=${encodeURIComponent(`http://localhost:${AUTH_SERVER_PORT}/auth/callback`)}`
       // Pass dev protocol so production web can use correct deep link if callback fails
-      authUrl += `&protocol=aadivar-1code-dev`
+      authUrl += `&protocol=twentyfirst-agents-dev`
     }
 
     shell.openExternal(authUrl)
