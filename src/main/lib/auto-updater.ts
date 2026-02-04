@@ -1,8 +1,8 @@
 import { BrowserWindow, ipcMain, app } from "electron"
 import log from "electron-log"
 import { autoUpdater, type UpdateInfo, type ProgressInfo } from "electron-updater"
-import * as fs from "fs"
-import * as path from "path"
+import { readFileSync, writeFileSync, existsSync } from "fs"
+import { join } from "path"
 
 /**
  * IMPORTANT: Do NOT use lazy/dynamic imports for electron-updater!
@@ -30,11 +30,11 @@ const CDN_BASE = "https://cdn.21st.dev/releases/desktop"
  * Creates default config if it doesn't exist
  */
 function loadUpdateConfig(): UpdateConfig {
-  const configPath = path.join(app.getPath("userData"), "update-config.json")
+  const configPath = join(app.getPath("userData"), "update-config.json")
 
   try {
-    if (fs.existsSync(configPath)) {
-      const content = fs.readFileSync(configPath, "utf-8")
+    if (existsSync(configPath)) {
+      const content = readFileSync(configPath, "utf-8")
       const config = JSON.parse(content) as UpdateConfig
       log.info("[AutoUpdater] Loaded config:", config)
       return config
@@ -51,9 +51,9 @@ function loadUpdateConfig(): UpdateConfig {
  * Save update configuration to user data directory
  */
 export function saveUpdateConfig(config: UpdateConfig): void {
-  const configPath = path.join(app.getPath("userData"), "update-config.json")
+  const configPath = join(app.getPath("userData"), "update-config.json")
   try {
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2))
+    writeFileSync(configPath, JSON.stringify(config, null, 2))
     log.info("[AutoUpdater] Saved config:", config)
   } catch (error) {
     log.error("[AutoUpdater] Failed to save config:", error)
@@ -82,6 +82,38 @@ function initAutoUpdaterConfig() {
 const MIN_CHECK_INTERVAL = 60 * 1000 // 1 minute
 let lastCheckTime = 0
 
+// Update channel preference file
+const CHANNEL_PREF_FILE = "update-channel.json"
+
+type UpdateChannel = "latest" | "beta"
+
+function getChannelPrefPath(): string {
+  return join(app.getPath("userData"), CHANNEL_PREF_FILE)
+}
+
+function getSavedChannel(): UpdateChannel {
+  try {
+    const prefPath = getChannelPrefPath()
+    if (existsSync(prefPath)) {
+      const data = JSON.parse(readFileSync(prefPath, "utf-8"))
+      if (data.channel === "beta" || data.channel === "latest") {
+        return data.channel
+      }
+    }
+  } catch {
+    // Ignore read errors, fall back to default
+  }
+  return "latest"
+}
+
+function saveChannel(channel: UpdateChannel): void {
+  try {
+    writeFileSync(getChannelPrefPath(), JSON.stringify({ channel }), "utf-8")
+  } catch (error) {
+    log.error("[AutoUpdater] Failed to save channel preference:", error)
+  }
+}
+
 let getAllWindows: (() => BrowserWindow[]) | null = null
 
 /**
@@ -109,6 +141,11 @@ export async function initAutoUpdater(getWindows: () => BrowserWindow[]) {
 
   // Initialize config
   initAutoUpdaterConfig()
+
+// Set update channel from saved preference
+  const savedChannel = getSavedChannel()
+  autoUpdater.channel = savedChannel
+  log.info(`[AutoUpdater] Using update channel: ${savedChannel}`)
 
   // Load update source configuration
   const config = loadUpdateConfig()
@@ -271,7 +308,7 @@ function registerIpcHandlers() {
     }
   })
 
-  // Get update source configuration
+// Get update source configuration
   ipcMain.handle("update:get-config", () => {
     return loadUpdateConfig()
   })
@@ -287,6 +324,31 @@ function registerIpcHandlers() {
       return true
     },
   )
+
+  // Set update channel (latest = stable only, beta = stable + beta)
+  ipcMain.handle("update:set-channel", async (_event, channel: string) => {
+    if (channel !== "latest" && channel !== "beta") {
+      log.warn(`[AutoUpdater] Invalid channel: ${channel}`)
+      return false
+    }
+    log.info(`[AutoUpdater] Switching update channel to: ${channel}`)
+    autoUpdater.channel = channel
+    saveChannel(channel)
+    // Check for updates immediately with new channel
+    if (app.isPackaged) {
+      try {
+        await autoUpdater.checkForUpdates()
+      } catch (error) {
+        log.error("[AutoUpdater] Post-channel-switch check failed:", error)
+      }
+    }
+    return true
+  })
+
+  // Get current update channel
+  ipcMain.handle("update:get-channel", () => {
+    return getSavedChannel()
+  })
 }
 
 /**
